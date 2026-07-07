@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family:
+    "Instrument Sans", "Avenir Next", Avenir, "Helvetica Neue", ui-sans-serif,
+    system-ui, sans-serif;
+  color: #24201d;
+  background: #fff;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #fff;
+}
+
+.brand-wordmark {
+  font-family:
+    "Newsreader", "Iowan Old Style", Baskerville, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+
+.font-display {
+  font-family:
+    "Instrument Sans", "Avenir Next", Avenir, "Helvetica Neue", ui-sans-serif,
+    system-ui, sans-serif;
+  font-weight: 500;
+}
+
+.font-semibold {
+  font-weight: 500;
+}
+
+.font-bold {
+  font-weight: 600;
+}
+
+button,
+a,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #a8593b;
+  outline-offset: 3px;
+}
+
+::selection {
+  background: #a8593b;
+  color: #fffdf8;
+}

@@ -1,0 +1,15 @@
+processing:
+  enabled: true
+  result-queue-url: http://localhost:4566/queue/us-east-1/000000000000/closethop-image-processing-results
+  region: us-east-1
+  endpoint: http://localhost:4566
+  access-key: dummy
+  secret-key: dummy
+
+aws:
+  s3:
+    bucket-name: closethop-images
+    region: us-east-1
+    access-key: dummy
+    secret-key: dummy
+    endpoint: http://localhost:4566

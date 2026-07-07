@@ -1,0 +1,1 @@
+ALTER TABLE outfits DROP COLUMN name;

@@ -1,0 +1,6 @@
+target
+data
+.idea
+.git
+compose.yml
+localstack

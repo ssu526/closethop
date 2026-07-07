@@ -1,0 +1,72 @@
+services:
+  localstack:
+    # Last community release that does not require a LocalStack account token.
+    image: localstack/localstack:4.14.0
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3,sqs
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_ENDPOINT_STRATEGY: path
+      PERSISTENCE: "1"
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+    volumes:
+      - ./localstack/init:/etc/localstack/init/ready.d
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  image-worker:
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile.local
+    environment:
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      IMAGE_BUCKET: closethop-images
+      JOB_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing
+      RESULT_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing-results
+      PUBLIC_URL: http://localhost:4566/closethop-images
+      VISION_PROVIDER: ${VISION_PROVIDER:-fake}
+      VISION_MODEL: ${VISION_MODEL:-gemini-2.5-flash-lite}
+      VISION_SCHEMA_VERSION: "2"
+      CLASSIFICATION_PROMPT_PATH: /prompts/clothing_classifier_prompt.txt
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      METRICS_ENABLED: "false"
+      U2NET_HOME: /models
+    volumes:
+      - worker-models:/models
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: unless-stopped
+
+  image-worker-dlq:
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile.local
+    environment:
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      IMAGE_BUCKET: closethop-images
+      JOB_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing-dlq
+      RESULT_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing-results
+      PUBLIC_URL: http://localhost:4566/closethop-images
+      GEMINI_SECRET_ARN: unused
+      METRICS_ENABLED: "false"
+      DLQ_MODE: "true"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  localstack-data:
+  worker-models:
