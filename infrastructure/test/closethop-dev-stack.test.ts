@@ -27,7 +27,15 @@ function alertTemplate(): Template {
   return Template.fromStack(stack);
 }
 
-describe("ClosetHop dev infrastructure", () => {
+describe("ClosetHop EC2 Compose infrastructure", () => {
+  test("does not provision managed application or database services", () => {
+    const stack = template();
+    stack.resourceCountIs("AWS::RDS::DBInstance", 0);
+    stack.resourceCountIs("AWS::ECS::Cluster", 0);
+    stack.resourceCountIs("AWS::ECS::ExpressGatewayService", 0);
+    stack.resourceCountIs("AWS::EC2::NatGateway", 0);
+  });
+
   test("configures passwordless Cognito and Google OAuth", () => {
     const stack = template();
     stack.hasResourceProperties("AWS::Cognito::UserPool", {
@@ -46,10 +54,10 @@ describe("ClosetHop dev infrastructure", () => {
     });
   });
 
-  test("keeps images private for signed URL access", () => {
+  test("keeps images and backups private", () => {
     const stack = template();
+    stack.resourceCountIs("AWS::S3::Bucket", 2);
     stack.hasResourceProperties("AWS::S3::Bucket", {
-      BucketEncryption: Match.anyValue(),
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: true,
         BlockPublicPolicy: true,
@@ -57,51 +65,32 @@ describe("ClosetHop dev infrastructure", () => {
         RestrictPublicBuckets: true
       }
     });
-    stack.resourceCountIs("AWS::CloudFront::Distribution", 0);
-  });
-
-  test("provisions private PostgreSQL and ECS Express", () => {
-    const stack = template();
-    stack.hasResourceProperties("AWS::RDS::DBInstance", {
-      Engine: "postgres",
-      StorageEncrypted: true,
-      PubliclyAccessible: false
-    });
-    stack.hasResourceProperties("AWS::ECS::ExpressGatewayService", {
-      HealthCheckPath: "/actuator/health",
-      PrimaryContainer: Match.objectLike({
-        ContainerPort: 8080,
-        Secrets: Match.arrayWith([
-          Match.objectLike({ Name: "DATASOURCE_PASSWORD" })
-        ])
-      })
-    });
-  });
-
-  test("grants task access to the image bucket", () => {
-    const stack = template();
-    stack.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: {
-        Statement: Match.arrayWith([
+    stack.hasResourceProperties("AWS::S3::Bucket", {
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([
           Match.objectLike({
-            Action: Match.arrayWith(["s3:GetObject*", "s3:PutObject"])
+            Id: "RetainPostgresBackups",
+            Prefix: "postgres/"
           })
         ])
       }
     });
+    stack.resourceCountIs("AWS::CloudFront::Distribution", 0);
   });
 
   test("provisions asynchronous image processing resources", () => {
     const stack = template();
-    stack.resourceCountIs("AWS::SQS::Queue", 4);
+    stack.resourceCountIs("AWS::SQS::Queue", 2);
     stack.hasResourceProperties("AWS::Lambda::Function", {
       PackageType: "Image",
       MemorySize: 4096,
-      Timeout: 300
-    });
-    stack.resourceCountIs("AWS::DynamoDB::Table", 0);
-    stack.hasResourceProperties("AWS::Lambda::Function", {
-      VpcConfig: Match.anyValue()
+      Timeout: 300,
+      Environment: {
+        Variables: Match.objectLike({
+          VISION_PROVIDER: "gemini",
+          RESULT_QUEUE_URL: Match.anyValue()
+        })
+      }
     });
     stack.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
       BatchSize: 1,
@@ -121,7 +110,44 @@ describe("ClosetHop dev infrastructure", () => {
         ])
       }
     });
-    stack.resourceCountIs("AWS::Lambda::EventSourceMapping", 2);
+    stack.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
+  });
+
+  test("provisions an SSM-managed EC2 host for Docker Compose", () => {
+    const stack = template();
+    stack.resourceCountIs("AWS::EC2::Instance", 1);
+    stack.hasResourceProperties("AWS::EC2::SecurityGroup", {
+      SecurityGroupIngress: Match.arrayWith([
+        Match.objectLike({ FromPort: 80, ToPort: 80 }),
+        Match.objectLike({ FromPort: 443, ToPort: 443 })
+      ])
+    });
+    stack.hasResourceProperties("AWS::EC2::Instance", {
+      UserData: {
+        "Fn::Base64": Match.stringLikeRegexp("docker")
+      },
+      BlockDeviceMappings: Match.arrayWith([
+        Match.objectLike({
+          DeviceName: "/dev/xvdf",
+          Ebs: Match.objectLike({
+            Encrypted: true,
+            VolumeSize: 20
+          })
+        })
+      ])
+    });
+    stack.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["sqs:ReceiveMessage", "sqs:DeleteMessage"])
+          }),
+          Match.objectLike({
+            Action: Match.arrayWith(["s3:PutObject"])
+          })
+        ])
+      }
+    });
   });
 
   test("optionally routes alarms to an email SNS subscription", () => {
@@ -137,6 +163,9 @@ describe("ClosetHop dev infrastructure", () => {
     stack.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "closethop-prod-image-worker-errors",
       AlarmActions: Match.arrayWith([{ Ref: Match.stringLikeRegexp("AlertTopic") }])
+    });
+    stack.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "closethop-prod-ec2-status-check"
     });
     stack.hasOutput("AlertTopicArn", {});
   });

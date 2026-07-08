@@ -12,13 +12,11 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecrAssets from "aws-cdk-lib/aws-ecr-assets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as rds from "aws-cdk-lib/aws-rds";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3Notifications from "aws-cdk-lib/aws-s3-notifications";
 import * as sns from "aws-cdk-lib/aws-sns";
@@ -55,32 +53,8 @@ export class ClosetHopDevStack extends Stack {
       );
     }
     const addAlarmAction = (alarm: cloudwatch.Alarm) => {
-      if (alertTopic) {
-        alarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
-      }
+      if (alertTopic) alarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
     };
-
-    const vpc = new ec2.Vpc(this, "Vpc", {
-      maxAzs: 2,
-      natGateways: 1,
-      subnetConfiguration: [
-        {
-          name: "public",
-          subnetType: ec2.SubnetType.PUBLIC,
-          cidrMask: 24
-        },
-        {
-          name: "application",
-          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-          cidrMask: 24
-        },
-        {
-          name: "database",
-          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
-          cidrMask: 24
-        }
-      ]
-    });
 
     const imageBucket = new s3.Bucket(this, "ImageBucket", {
       bucketName: `${prefix}-images-${this.account}-${this.region}`,
@@ -90,95 +64,114 @@ export class ClosetHopDevStack extends Stack {
       versioned: isProduction,
       removalPolicy: dataRemovalPolicy,
       autoDeleteObjects: !isProduction,
-      lifecycleRules: [{
-        id: "ExpireStagingUploads",
-        prefix: "staging/",
-        abortIncompleteMultipartUploadAfter: Duration.days(1)
-      }]
+      lifecycleRules: [
+        {
+          id: "ExpireStagingUploads",
+          prefix: "staging/",
+          abortIncompleteMultipartUploadAfter: Duration.days(1),
+          expiration: Duration.days(7)
+        }
+      ]
     });
 
-    const processingDlq = new sqs.Queue(this, "ProcessingDlq", {
-      queueName: `${prefix}-image-processing-dlq`,
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      retentionPeriod: Duration.days(14)
+    const backupBucket = new s3.Bucket(this, "DatabaseBackupBucket", {
+      bucketName: `${prefix}-postgres-backups-${this.account}-${this.region}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      versioned: isProduction,
+      removalPolicy: dataRemovalPolicy,
+      autoDeleteObjects: !isProduction,
+      lifecycleRules: [
+        {
+          id: "RetainPostgresBackups",
+          prefix: "postgres/",
+          expiration: Duration.days(isProduction ? 35 : 14)
+        }
+      ]
     });
+
     const processingQueue = new sqs.Queue(this, "ProcessingQueue", {
       queueName: `${prefix}-image-processing`,
       encryption: sqs.QueueEncryption.SQS_MANAGED,
-      visibilityTimeout: Duration.minutes(6),
-      deadLetterQueue: { queue: processingDlq, maxReceiveCount: 3 }
-    });
-    const resultDlq = new sqs.Queue(this, "ProcessingResultDlq", {
-      queueName: `${prefix}-image-processing-results-dlq`,
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      retentionPeriod: Duration.days(14)
+      visibilityTimeout: Duration.minutes(6)
     });
     const resultQueue = new sqs.Queue(this, "ProcessingResultQueue", {
       queueName: `${prefix}-image-processing-results`,
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       visibilityTimeout: Duration.seconds(30),
-      retentionPeriod: Duration.days(4),
-      deadLetterQueue: {
-        queue: resultDlq,
-        maxReceiveCount: 5
-      }
+      retentionPeriod: Duration.days(4)
     });
+    processingQueue.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal("s3.amazonaws.com")],
+      actions: ["sqs:SendMessage"],
+      resources: [processingQueue.queueArn],
+      conditions: {
+        ArnEquals: { "aws:SourceArn": imageBucket.bucketArn },
+        StringEquals: { "aws:SourceAccount": this.account }
+      }
+    }));
     imageBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
       new s3Notifications.SqsDestination(processingQueue),
       { prefix: "staging/" }
     );
+
     const geminiSecret = secretsmanager.Secret.fromSecretNameV2(
       this,
       "GeminiApiSecret",
       props.geminiSecretName
     );
+    const googleSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "GoogleOAuthSecret",
+      props.googleSecretName
+    );
+
     const workerLogGroup = new logs.LogGroup(this, "ImageWorkerLogs", {
       logGroupName: `/aws/lambda/${prefix}-image-worker`,
       retention: isProduction ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
       removalPolicy: dataRemovalPolicy
     });
-    const dlqWorker = new lambda.DockerImageFunction(this, "ImageWorkerDlqConsumer", {
-      functionName: `${prefix}-image-worker-dlq`,
+
+    const imageWorker = new lambda.DockerImageFunction(this, "ImageWorker", {
+      functionName: `${prefix}-image-worker`,
       code: lambda.DockerImageCode.fromImageAsset(
         path.join(__dirname, "../.."),
         {
           file: "worker/Dockerfile",
-          platform: ecrAssets.Platform.LINUX_AMD64,
-          cmd: ["app.dlq_handler"]
+          platform: ecrAssets.Platform.LINUX_AMD64
         }
       ),
       architecture: lambda.Architecture.X86_64,
-      memorySize: 512,
-      timeout: Duration.seconds(30),
+      memorySize: 4096,
+      timeout: Duration.minutes(5),
+      ephemeralStorageSize: Size.gibibytes(10),
       environment: {
         IMAGE_BUCKET: imageBucket.bucketName,
         RESULT_QUEUE_URL: resultQueue.queueUrl,
         PUBLIC_URL: "",
-        GEMINI_SECRET_ARN: geminiSecret.secretArn
-      }
+        GEMINI_SECRET_ARN: geminiSecret.secretArn,
+        VISION_PROVIDER: "gemini",
+        VISION_MODEL: "gemini-2.5-flash-lite",
+        VISION_SCHEMA_VERSION: "2",
+        CLASSIFICATION_PROMPT_PATH: "/prompts/clothing_classifier_prompt.txt",
+        U2NET_HOME: "/opt/rembg-models"
+      },
+      logGroup: workerLogGroup
     });
-    dlqWorker.addEventSource(new lambdaEventSources.SqsEventSource(processingDlq, {
-      batchSize: 10,
+    imageWorker.addEventSource(new lambdaEventSources.SqsEventSource(processingQueue, {
+      batchSize: 1,
       reportBatchItemFailures: true
     }));
-    resultQueue.grantSendMessages(dlqWorker);
-    const processingDlqAlarm = new cloudwatch.Alarm(this, "ProcessingDlqAlarm", {
-      alarmName: `${prefix}-image-processing-dlq`,
-      metric: processingDlq.metricApproximateNumberOfMessagesVisible(),
-      threshold: 1,
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
-    });
-    addAlarmAction(processingDlqAlarm);
-    const processingResultDlqAlarm = new cloudwatch.Alarm(this, "ProcessingResultDlqAlarm", {
-      alarmName: `${prefix}-image-processing-results-dlq`,
-      metric: resultDlq.metricApproximateNumberOfMessagesVisible(),
-      threshold: 1,
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
-    });
-    addAlarmAction(processingResultDlqAlarm);
+    imageBucket.grantReadWrite(imageWorker);
+    resultQueue.grantSendMessages(imageWorker);
+    geminiSecret.grantRead(imageWorker);
+    imageWorker.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["cloudwatch:PutMetricData"],
+      resources: ["*"],
+      conditions: { StringEquals: { "cloudwatch:namespace": "ClosetHop/ImageProcessing" } }
+    }));
 
     const userPool = new cognito.UserPool(this, "UserPool", {
       userPoolName: `${prefix}-users`,
@@ -199,12 +192,6 @@ export class ClosetHopDevStack extends Stack {
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: dataRemovalPolicy
     });
-
-    const googleSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "GoogleOAuthSecret",
-      props.googleSecretName
-    );
 
     const googleProvider = new cognito.UserPoolIdentityProviderGoogle(
       this,
@@ -250,127 +237,91 @@ export class ClosetHopDevStack extends Stack {
     userPoolClient.node.addDependency(googleProvider);
 
     const userPoolDomain = userPool.addDomain("Domain", {
-      cognitoDomain: {
-        domainPrefix: `${prefix}-${this.account}`
-      },
+      cognitoDomain: { domainPrefix: `${prefix}-${this.account}` },
       managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN
     });
 
-    const databaseSecurityGroup = new ec2.SecurityGroup(
-      this,
-      "DatabaseSecurityGroup",
-      { vpc, allowAllOutbound: false }
-    );
-    const serviceSecurityGroup = new ec2.SecurityGroup(
-      this,
-      "ServiceSecurityGroup",
-      { vpc, allowAllOutbound: true }
-    );
-    const workerSecurityGroup = new ec2.SecurityGroup(
-      this,
-      "WorkerSecurityGroup",
-      { vpc, allowAllOutbound: true }
-    );
-    databaseSecurityGroup.addIngressRule(
-      serviceSecurityGroup,
-      ec2.Port.tcp(5432),
-      "Spring Boot service access"
-    );
-    databaseSecurityGroup.addIngressRule(
-      workerSecurityGroup,
-      ec2.Port.tcp(5432),
-      "Image worker access"
-    );
-
-    const database = new rds.DatabaseInstance(this, "Database", {
-      databaseName: "closethop",
-      engine: rds.DatabaseInstanceEngine.postgres({
-        version: rds.PostgresEngineVersion.VER_16_4
-      }),
-      instanceType: ec2.InstanceType.of(
-        ec2.InstanceClass.T4G,
-        ec2.InstanceSize.MICRO
-      ),
-      credentials: rds.Credentials.fromGeneratedSecret("closethop"),
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
-      securityGroups: [databaseSecurityGroup],
-      allocatedStorage: 20,
-      maxAllocatedStorage: 100,
-      storageEncrypted: true,
-      multiAz: isProduction,
-      backupRetention: Duration.days(isProduction ? 7 : 1),
-      deletionProtection: isProduction,
-      removalPolicy: dataRemovalPolicy,
-      deleteAutomatedBackups: !isProduction
-    });
-    const databaseCpuAlarm = new cloudwatch.Alarm(this, "DatabaseCpuAlarm", {
-      alarmName: `${prefix}-database-cpu`,
-      metric: database.metricCPUUtilization(),
-      threshold: 80,
-      evaluationPeriods: 3
-    });
-    addAlarmAction(databaseCpuAlarm);
-    const databaseStorageAlarm = new cloudwatch.Alarm(this, "DatabaseStorageAlarm", {
-      alarmName: `${prefix}-database-free-storage`,
-      metric: database.metricFreeStorageSpace(),
-      threshold: 5 * 1024 * 1024 * 1024,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 1
-    });
-    addAlarmAction(databaseStorageAlarm);
-    const databaseConnectionsAlarm = new cloudwatch.Alarm(this, "DatabaseConnectionsAlarm", {
-      alarmName: `${prefix}-database-connections`,
-      metric: database.metricDatabaseConnections(),
-      threshold: 60,
-      evaluationPeriods: 2
-    });
-    addAlarmAction(databaseConnectionsAlarm);
-
-    const imageWorker = new lambda.DockerImageFunction(this, "ImageWorker", {
-      functionName: `${prefix}-image-worker`,
-      code: lambda.DockerImageCode.fromImageAsset(
-        path.join(__dirname, "../.."),
+    const vpc = new ec2.Vpc(this, "Vpc", {
+      maxAzs: 1,
+      natGateways: 0,
+      subnetConfiguration: [
         {
-          file: "worker/Dockerfile",
-          platform: ecrAssets.Platform.LINUX_AMD64
+          name: "public",
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24
         }
-      ),
-      architecture: lambda.Architecture.X86_64,
-      memorySize: 4096,
-      timeout: Duration.minutes(5),
-      ephemeralStorageSize: Size.gibibytes(10),
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      securityGroups: [workerSecurityGroup],
-      environment: {
-        IMAGE_BUCKET: imageBucket.bucketName,
-        RESULT_QUEUE_URL: resultQueue.queueUrl,
-        PUBLIC_URL: "",
-        GEMINI_SECRET_ARN: geminiSecret.secretArn,
-        DATASOURCE_SECRET_ARN: database.secret!.secretArn,
-        DATASOURCE_DB_NAME: "closethop",
-        VISION_PROVIDER: "gemini",
-        VISION_MODEL: "gemini-2.5-flash-lite",
-        VISION_SCHEMA_VERSION: "2",
-        CLASSIFICATION_PROMPT_PATH: "/prompts/clothing_classifier_prompt.txt",
-        U2NET_HOME: "/opt/rembg-models"
-      },
-      logGroup: workerLogGroup
+      ]
     });
-    imageWorker.addEventSource(new lambdaEventSources.SqsEventSource(processingQueue, {
-      batchSize: 1,
-      reportBatchItemFailures: true
-    }));
-    imageBucket.grantReadWrite(imageWorker);
-    resultQueue.grantSendMessages(imageWorker);
-    geminiSecret.grantRead(imageWorker);
-    database.secret?.grantRead(imageWorker);
-    imageWorker.addToRolePolicy(new iam.PolicyStatement({
+
+    const appSecurityGroup = new ec2.SecurityGroup(this, "AppSecurityGroup", {
+      vpc,
+      allowAllOutbound: true,
+      description: "Public HTTP/HTTPS access for nginx; SSM is used for shell access."
+    });
+    appSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80), "HTTP to nginx");
+    appSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "HTTPS to nginx");
+
+    const instanceRole = new iam.Role(this, "Ec2AppRole", {
+      assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonSSMManagedInstanceCore"),
+        iam.ManagedPolicy.fromAwsManagedPolicyName("CloudWatchAgentServerPolicy")
+      ]
+    });
+    imageBucket.grantReadWrite(instanceRole);
+    resultQueue.grantConsumeMessages(instanceRole);
+    backupBucket.grantPut(instanceRole, "postgres/*");
+    backupBucket.grantRead(instanceRole, "postgres/*");
+    instanceRole.addToPolicy(new iam.PolicyStatement({
       actions: ["cloudwatch:PutMetricData"],
       resources: ["*"],
-      conditions: { StringEquals: { "cloudwatch:namespace": "ClosetHop/ImageProcessing" } }
+      conditions: { StringEquals: { "cloudwatch:namespace": "ClosetHop/EC2" } }
     }));
+
+    const userData = ec2.UserData.forLinux();
+    userData.addCommands(
+      "set -euxo pipefail",
+      "dnf update -y",
+      "dnf install -y docker docker-compose-plugin git amazon-cloudwatch-agent",
+      "systemctl enable --now docker",
+      "usermod -aG docker ec2-user",
+      "mkdir -p /opt/closethop /data/closethop/postgres /data/closethop/backups",
+      "chown -R ec2-user:ec2-user /opt/closethop /data/closethop",
+      "DATA_DEVICE=$(lsblk -ndo NAME,TYPE,MOUNTPOINT | awk '$2==\"disk\" && $3==\"\" {print \"/dev/\"$1; exit}')",
+      "if [ -n \"$DATA_DEVICE\" ] && ! blkid \"$DATA_DEVICE\"; then mkfs -t xfs \"$DATA_DEVICE\"; fi",
+      "if [ -n \"$DATA_DEVICE\" ] && ! grep -q /data/closethop /etc/fstab; then echo \"UUID=$(blkid -s UUID -o value \"$DATA_DEVICE\") /data/closethop xfs defaults,nofail 0 2\" >> /etc/fstab; mount /data/closethop; chown -R ec2-user:ec2-user /data/closethop; fi",
+      "cat >/opt/closethop/README-first-login.txt <<'EOF'",
+      "Clone the repository into /opt/closethop/repo, create repo/deploy/ec2/.env from .env.example, then run docker compose from repo/deploy/ec2.",
+      "EOF"
+    );
+
+    const appInstance = new ec2.Instance(this, "AppInstance", {
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      role: instanceRole,
+      securityGroup: appSecurityGroup,
+      userData,
+      blockDevices: [
+        {
+          deviceName: "/dev/xvda",
+          volume: ec2.BlockDeviceVolume.ebs(16, {
+            encrypted: true,
+            volumeType: ec2.EbsDeviceVolumeType.GP3
+          })
+        },
+        {
+          deviceName: "/dev/xvdf",
+          volume: ec2.BlockDeviceVolume.ebs(20, {
+            encrypted: true,
+            volumeType: ec2.EbsDeviceVolumeType.GP3,
+            deleteOnTermination: !isProduction
+          })
+        }
+      ]
+    });
+
     const imageWorkerErrorsAlarm = new cloudwatch.Alarm(this, "ImageWorkerErrorsAlarm", {
       alarmName: `${prefix}-image-worker-errors`,
       metric: imageWorker.metricErrors(),
@@ -395,126 +346,44 @@ export class ClosetHopDevStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
     });
     addAlarmAction(resultQueueAgeAlarm);
-
-    const backendImage = new ecrAssets.DockerImageAsset(
-      this,
-      "BackendImage",
-      {
-        directory: path.join(__dirname, "../.."),
-        file: "backend/Dockerfile",
-        platform: ecrAssets.Platform.LINUX_AMD64
-      }
-    );
-
-    const executionRole = new iam.Role(this, "ExecutionRole", {
-      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AmazonECSTaskExecutionRolePolicy"
-        )
-      ]
+    const instanceStatusAlarm = new cloudwatch.Alarm(this, "Ec2StatusCheckAlarm", {
+      alarmName: `${prefix}-ec2-status-check`,
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/EC2",
+        metricName: "StatusCheckFailed",
+        dimensionsMap: { InstanceId: appInstance.instanceId },
+        period: Duration.minutes(5),
+        statistic: "Maximum"
+      }),
+      threshold: 1,
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
     });
-    backendImage.repository.grantPull(executionRole);
-    database.secret?.grantRead(executionRole);
-    geminiSecret.grantRead(executionRole);
-
-    const taskRole = new iam.Role(this, "TaskRole", {
-      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com")
+    addAlarmAction(instanceStatusAlarm);
+    const instanceCpuAlarm = new cloudwatch.Alarm(this, "Ec2CpuAlarm", {
+      alarmName: `${prefix}-ec2-cpu`,
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/EC2",
+        metricName: "CPUUtilization",
+        dimensionsMap: { InstanceId: appInstance.instanceId },
+        period: Duration.minutes(5),
+        statistic: "Average"
+      }),
+      threshold: 80,
+      evaluationPeriods: 3,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
     });
-    imageBucket.grantReadWrite(taskRole);
-    resultQueue.grantConsumeMessages(taskRole);
-
-    const infrastructureRole = new iam.Role(this, "InfrastructureRole", {
-      assumedBy: new iam.ServicePrincipal("ecs.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AmazonECSInfrastructureRoleforExpressGatewayServices"
-        )
-      ]
-    });
-
-    const logGroup = new logs.LogGroup(this, "BackendLogs", {
-      logGroupName: `/ecs/${prefix}-backend`,
-      retention: isProduction ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
-      removalPolicy: dataRemovalPolicy
-    });
-
-    const cluster = new ecs.Cluster(this, "Cluster", {
-      vpc,
-      clusterName: `${prefix}-cluster`,
-      containerInsightsV2: ecs.ContainerInsights.ENABLED
-    });
+    addAlarmAction(instanceCpuAlarm);
 
     const issuer = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`;
-    const databaseUrl = `jdbc:postgresql://${database.dbInstanceEndpointAddress}:${database.dbInstanceEndpointPort}/closethop`;
 
-    const service = new ecs.CfnExpressGatewayService(
-      this,
-      "BackendService",
-      {
-        serviceName: `${prefix}-backend`,
-        cluster: cluster.clusterArn,
-        executionRoleArn: executionRole.roleArn,
-        infrastructureRoleArn: infrastructureRole.roleArn,
-        taskRoleArn: taskRole.roleArn,
-        cpu: "512",
-        memory: "1024",
-        healthCheckPath: "/actuator/health",
-        networkConfiguration: {
-          securityGroups: [serviceSecurityGroup.securityGroupId],
-          subnets: vpc.privateSubnets.map(subnet => subnet.subnetId)
-        },
-        scalingTarget: {
-          autoScalingMetric: "CPU",
-          autoScalingTargetValue: 60,
-          minTaskCount: 1,
-          maxTaskCount: 3
-        },
-        primaryContainer: {
-          image: backendImage.imageUri,
-          containerPort: 8080,
-          environment: [
-            { name: "SPRING_PROFILES_ACTIVE", value: "aws" },
-            { name: "SERVER_PORT", value: "8080" },
-            { name: "DATASOURCE_URL", value: databaseUrl },
-            { name: "AWS_REGION", value: this.region },
-            { name: "AWS_S3_BUCKET", value: imageBucket.bucketName },
-            { name: "PROCESSING_RESULT_QUEUE_URL", value: resultQueue.queueUrl },
-            {
-              name: "AWS_PUBLIC_URL",
-              value: ""
-            },
-            { name: "COGNITO_ISSUER", value: issuer },
-            { name: "COGNITO_CLIENT_ID", value: userPoolClient.userPoolClientId },
-            { name: "OUTFIT_AI_MODEL", value: "gemini-2.5-flash-lite" },
-            { name: "OUTFIT_SUGGESTION_PROMPT_PATH", value: "classpath:prompts/outfit_suggestion_prompt.txt" },
-            { name: "CORS_ALLOWED_ORIGINS", value: new URL(props.callbackUrl).origin }
-          ],
-          secrets: [
-            {
-              name: "DATASOURCE_USERNAME",
-              valueFrom: `${database.secret!.secretArn}:username::`
-            },
-            {
-              name: "DATASOURCE_PASSWORD",
-              valueFrom: `${database.secret!.secretArn}:password::`
-            },
-            {
-              name: "GEMINI_API_KEY",
-              valueFrom: `${geminiSecret.secretArn}:apiKey::`
-            }
-          ],
-          awsLogsConfiguration: {
-            logGroup: logGroup.logGroupName,
-            logStreamPrefix: "backend"
-          }
-        }
-      }
-    );
-    service.node.addDependency(database);
-    service.node.addDependency(logGroup);
-
-    new CfnOutput(this, "ApiUrl", { value: service.attrEndpoint });
+    new CfnOutput(this, "ApiUrl", {
+      value: `http://${appInstance.instancePublicDnsName}`
+    });
+    new CfnOutput(this, "Ec2InstanceId", { value: appInstance.instanceId });
+    new CfnOutput(this, "Ec2PublicDnsName", { value: appInstance.instancePublicDnsName });
+    new CfnOutput(this, "ImageBucketName", { value: imageBucket.bucketName });
+    new CfnOutput(this, "DatabaseBackupBucketName", { value: backupBucket.bucketName });
     new CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });
     new CfnOutput(this, "UserPoolClientId", {
       value: userPoolClient.userPoolClientId
@@ -529,7 +398,7 @@ export class ClosetHopDevStack extends Stack {
       value: `${userPoolDomain.baseUrl()}/oauth2/idpresponse`
     });
     new CfnOutput(this, "ProcessingQueueUrl", { value: processingQueue.queueUrl });
-    new CfnOutput(this, "ProcessingDlqUrl", { value: processingDlq.queueUrl });
+    new CfnOutput(this, "ProcessingResultQueueUrl", { value: resultQueue.queueUrl });
     if (alertTopic) {
       new CfnOutput(this, "AlertTopicArn", { value: alertTopic.topicArn });
     }
