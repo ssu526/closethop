@@ -1,7 +1,5 @@
 import io
 import logging
-import json
-import uuid
 from PIL import Image
 
 
@@ -10,7 +8,6 @@ def test_normalized_image_is_bounded_and_hash_is_stable(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("IMAGE_BUCKET", "images")
-    monkeypatch.setenv("RESULT_QUEUE_URL", "results")
     monkeypatch.setenv("PUBLIC_URL", "https://images.example")
     monkeypatch.setenv("GEMINI_SECRET_ARN", "secret")
     import app
@@ -151,9 +148,7 @@ def test_process_reuses_postgres_metadata_without_calling_gemini(monkeypatch):
             self.put_calls.append(kwargs)
 
     fake_s3 = FakeS3()
-    published = []
     monkeypatch.setattr(app, "s3", fake_s3)
-    monkeypatch.setattr(app, "publish_result", published.append)
     monkeypatch.setattr(app, "metric", lambda *_args: None)
     monkeypatch.setattr(app, "normalize_image", lambda _source: (normalized_bytes, "processed-hash"))
     monkeypatch.setattr(
@@ -167,7 +162,7 @@ def test_process_reuses_postgres_metadata_without_calling_gemini(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("Gemini should not be called")),
     )
 
-    app.process({
+    result = app.process({
         "itemId": "item-1",
         "userId": "user-1",
         "version": 1,
@@ -175,8 +170,8 @@ def test_process_reuses_postgres_metadata_without_calling_gemini(monkeypatch):
     })
 
     assert fake_s3.put_calls
-    assert published[0]["imageHash"] == "processed-hash"
-    assert published[0]["metadata"]["tags"] == ["blue", "cotton"]
+    assert result["imageHash"] == "processed-hash"
+    assert result["metadata"]["tags"] == ["blue", "cotton"]
 
 
 def test_process_calls_gemini_when_no_postgres_match(monkeypatch):
@@ -214,15 +209,13 @@ def test_process_calls_gemini_when_no_postgres_match(monkeypatch):
 
     fake_provider = FakeProvider()
     fake_s3 = FakeS3()
-    published = []
     monkeypatch.setattr(app, "s3", fake_s3)
-    monkeypatch.setattr(app, "publish_result", published.append)
     monkeypatch.setattr(app, "metric", lambda *_args: None)
     monkeypatch.setattr(app, "normalize_image", lambda _source: (normalized_bytes, "processed-hash"))
     monkeypatch.setattr(app, "lookup_reused_metadata", lambda _image_hash: None)
     monkeypatch.setattr(app, "vision_provider", lambda: fake_provider)
 
-    app.process({
+    result = app.process({
         "itemId": "item-2",
         "userId": "user-2",
         "version": 1,
@@ -231,7 +224,7 @@ def test_process_calls_gemini_when_no_postgres_match(monkeypatch):
 
     assert fake_provider.calls == 1
     assert fake_s3.put_calls
-    assert published[0]["metadata"]["tags"] == ["navy"]
+    assert result["metadata"]["tags"] == ["navy"]
 
 
 def test_gemini_key_falls_back_to_secrets_manager(monkeypatch):
@@ -257,140 +250,44 @@ def test_metrics_log_when_cloudwatch_is_disabled(monkeypatch, caplog):
     assert '"name": "CacheHit"' in caplog.text
 
 
-def test_local_poller_deletes_acknowledged_message(monkeypatch):
-    monkeypatch.setenv("JOB_QUEUE_URL", "jobs")
-    import local_worker
-
-    class FakeSqs:
-        deleted = False
-
-        def receive_message(self, **_kwargs):
-            return {"Messages": [{
-                "MessageId": "message-1",
-                "ReceiptHandle": "receipt",
-                "Body": "{}",
-                "Attributes": {"ApproximateReceiveCount": "1"},
-            }]}
-
-        def delete_message(self, **_kwargs):
-            self.deleted = True
-
-    fake_sqs = FakeSqs()
-    monkeypatch.setattr(local_worker, "sqs", fake_sqs)
-    monkeypatch.setattr(local_worker, "handler", lambda *_args: {"batchItemFailures": []})
-    assert local_worker.poll_once() == 1
-    assert fake_sqs.deleted
-
-
-def test_local_poller_leaves_failed_message_for_retry(monkeypatch):
-    import local_worker
-
-    class FakeSqs:
-        deleted = False
-
-        def receive_message(self, **_kwargs):
-            return {"Messages": [{
-                "MessageId": "message-2",
-                "ReceiptHandle": "receipt",
-                "Body": "{}",
-                "Attributes": {"ApproximateReceiveCount": "1"},
-            }]}
-
-        def delete_message(self, **_kwargs):
-            self.deleted = True
-
-    fake_sqs = FakeSqs()
-    monkeypatch.setattr(local_worker, "sqs", fake_sqs)
-    monkeypatch.setattr(
-        local_worker,
-        "MESSAGE_HANDLER",
-        lambda *_args: {"batchItemFailures": [{"itemIdentifier": "message-2"}]},
-    )
-    assert local_worker.poll_once() == 1
-    assert not fake_sqs.deleted
-
-
-def s3_message(receive_count="1"):
-    user_id = str(uuid.uuid4())
-    item_id = str(uuid.uuid4())
-    body = json.dumps({"Records": [{"s3": {"object": {
-        "key": f"staging/{user_id}/{item_id}/1/source"
-    }}}]})
-    return {
-        "messageId": "message",
-        "body": body,
-        "attributes": {"ApproximateReceiveCount": receive_count},
-    }, user_id, item_id
-
-
-def s3_message_with_multiple_records():
-    first_user_id = str(uuid.uuid4())
-    first_item_id = str(uuid.uuid4())
-    second_user_id = str(uuid.uuid4())
-    second_item_id = str(uuid.uuid4())
-    body = json.dumps({"Records": [
-        {"s3": {"object": {"key": f"staging/{first_user_id}/{first_item_id}/1/source"}}},
-        {"s3": {"object": {"key": f"staging/{second_user_id}/{second_item_id}/2/source"}}},
-    ]})
-    return {
-        "messageId": "message-multi",
-        "body": body,
-        "attributes": {"ApproximateReceiveCount": "1"},
-    }, [
-        {
-            "userId": first_user_id,
-            "itemId": first_item_id,
-            "version": 1,
-            "sourceKey": f"staging/{first_user_id}/{first_item_id}/1/source",
-        },
-        {
-            "userId": second_user_id,
-            "itemId": second_item_id,
-            "version": 2,
-            "sourceKey": f"staging/{second_user_id}/{second_item_id}/2/source",
-        },
-    ]
-
-
-def test_s3_notification_is_parsed_into_versioned_job():
+def test_http_process_returns_ready_payload(monkeypatch):
     import app
-    record, user_id, item_id = s3_message()
-    job = app.job_from_s3_event(record["body"])
-    assert job == {
-        "userId": user_id,
-        "itemId": item_id,
+
+    monkeypatch.setattr(app, "process", lambda job: {
+        "itemId": job["itemId"],
+        "version": job["version"],
+        "status": "READY",
+        "objectKey": "users/output.webp",
+        "imageHash": "hash",
+        "metadata": {"tags": ["blue"]},
+    })
+
+    client = app.http_app.test_client()
+    response = client.post("/process", json={
+        "userId": "user-1",
+        "itemId": "item-1",
         "version": 1,
-        "sourceKey": f"staging/{user_id}/{item_id}/1/source",
-    }
+        "sourceKey": "staging/user-1/item-1/1/source",
+    })
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "READY"
 
 
-def test_s3_notification_with_multiple_records_is_split_into_jobs():
+def test_http_process_returns_failed_payload_for_value_error(monkeypatch):
     import app
-    record, jobs = s3_message_with_multiple_records()
-    assert app.jobs_from_s3_event(record["body"]) == jobs
 
+    monkeypatch.setattr(app, "process", lambda _job: (_ for _ in ()).throw(ValueError("BACKGROUND_REMOVAL_EMPTY")))
 
-def test_worker_retries_first_two_failures_and_reports_third(monkeypatch):
-    import app
-    monkeypatch.setattr(app, "process", lambda _job: (_ for _ in ()).throw(RuntimeError("boom")))
-    published = []
-    monkeypatch.setattr(app, "publish_result", published.append)
-    monkeypatch.setattr(app, "metric", lambda *_args: None)
+    client = app.http_app.test_client()
+    response = client.post("/process", json={
+        "userId": "user-1",
+        "itemId": "item-1",
+        "version": 1,
+        "sourceKey": "staging/user-1/item-1/1/source",
+    })
 
-    first, _, _ = s3_message("1")
-    second, _, _ = s3_message("2")
-    third, _, _ = s3_message("3")
-    assert app.handler({"Records": [first]}, None)["batchItemFailures"]
-    assert app.handler({"Records": [second]}, None)["batchItemFailures"]
-    assert app.handler({"Records": [third]}, None)["batchItemFailures"] == []
-    assert published[-1]["errorCode"] == "PROCESSING_FAILED"
-
-
-def test_worker_processes_all_s3_records_in_one_message(monkeypatch):
-    import app
-    processed = []
-    monkeypatch.setattr(app, "process", processed.append)
-
-    record, jobs = s3_message_with_multiple_records()
-    assert app.handler({"Records": [record]}, None)["batchItemFailures"] == []
-    assert processed == jobs
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "FAILED"
+    assert payload["errorCode"] == "BACKGROUND_REMOVAL_EMPTY"

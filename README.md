@@ -1,7 +1,7 @@
 # ClosetHop
 
 ClosetHop is a wardrobe management app with a React frontend, a Spring Boot API,
-and a Python image-processing worker. 
+and dedicated background workers.
 
 ## Architecture
 
@@ -17,9 +17,11 @@ flowchart LR
   B --> P[(Postgres on EBS)]
   B --> S3[(Private S3 image bucket)]
   S3 -->|staging upload events| Q[SQS processing queue]
-  Q --> L[Lambda image worker]
-  L --> S3
-  L --> R[SQS result queue]
+  Q --> W[Spring worker container]
+  W --> H[Python image processor]
+  H --> S3
+  H --> P
+  W --> R[SQS result queue]
   B -->|polls results| R
   BK[pg_dump backup job] --> BS3[(S3 backup bucket)]
   V --> C[Cognito hosted auth]
@@ -30,16 +32,20 @@ on a single EC2 instance. nginx proxies requests to the Spring Boot container,
 which uses a Postgres container persisted on EBS.
 
 Image uploads land in a private S3 bucket under a staging prefix. S3 event
-notifications push work to SQS, a Lambda image worker processes the image, and
-the backend polls the result queue to finalize wardrobe state. A scheduled
-backup job writes Postgres dumps to a separate S3 backup bucket.
+notifications push work to SQS, a Spring worker container claims the job and
+delegates image processing to a private Python HTTP service, and the backend
+polls the result queue to finalize wardrobe state. A scheduled backup job
+writes Postgres dumps to a separate S3 backup bucket.
 
 
 ## Project Layout
 
 - `frontend/` React + TypeScript UI
-- `backend/` Spring Boot API, auth, persistence, and local compose stack
-- `worker/` Python image-processing worker
+- `backend/` multi-module Spring Boot build
+  - `backend/api/` HTTP API
+  - `backend/shared/` shared DTOs and configuration properties
+  - `backend/worker/` SQS worker
+- `worker/` Python image-processing service used by the Spring worker
 - `infrastructure/` AWS CDK infrastructure for production
 - `deploy/ec2/` EC2 deployment configuration, including the production app stack
   in [`deploy/ec2/compose.prod.yml`](deploy/ec2/compose.prod.yml)
@@ -117,6 +123,7 @@ Edit `.env` using stack outputs:
 
 - `AWS_S3_BUCKET` from `ImageBucketName`
 - `BACKUP_BUCKET` from `DatabaseBackupBucketName`
+- `PROCESSING_QUEUE_URL` from `ProcessingQueueUrl`
 - `PROCESSING_RESULT_QUEUE_URL` from `ProcessingResultQueueUrl`
 - `COGNITO_ISSUER` from `CognitoIssuer`
 - `COGNITO_CLIENT_ID` from `UserPoolClientId`
@@ -189,7 +196,8 @@ back to `index.html` for client-side routes.
 In local development, the app uses H2 for the backend database and LocalStack for S3 and SQS so the full upload pipeline can run without AWS.
 
 
-1. Start LocalStack and the image worker from the backend compose file:
+1. Start LocalStack, the Python image processor, and the Spring worker from the
+   backend compose file:
 
    ```bash
    cd backend
@@ -201,10 +209,40 @@ In local development, the app uses H2 for the backend database and LocalStack fo
 
    ```bash
    cd backend
-   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+   ./mvnw -pl api -am install -DskipTests
+   ./mvnw -f api/pom.xml spring-boot:run -Dspring-boot.run.profiles=local
    ```
 
-3. Start the frontend in a third terminal:
+   The first command installs the shared module into your local Maven cache.
+   The second command runs the actual API module instead of the parent
+   aggregator project.
+
+3. Optional: start the Spring worker manually in a third terminal if you are
+   not using the Docker Compose worker:
+
+   ```bash
+   cd backend
+   ./mvnw -pl worker -am install -DskipTests
+   ./mvnw -f worker/pom.xml spring-boot:run
+   ```
+
+   If you also skip the Compose-managed Python service, run it separately:
+
+   ```bash
+   cd worker
+   pip install -r requirements-dev.txt
+   AWS_ACCESS_KEY_ID=dummy \
+   AWS_SECRET_ACCESS_KEY=dummy \
+   AWS_DEFAULT_REGION=us-east-1 \
+   AWS_ENDPOINT_URL=http://localhost:4566 \
+   IMAGE_BUCKET=closethop-images \
+   PUBLIC_URL=http://localhost:4566/closethop-images \
+   VISION_PROVIDER=fake \
+   METRICS_ENABLED=false \
+   gunicorn --bind 0.0.0.0:8080 --workers 1 --timeout 180 app:http_app
+   ```
+
+4. Start the frontend in another terminal:
 
    ```bash
    cd frontend
@@ -213,43 +251,23 @@ In local development, the app uses H2 for the backend database and LocalStack fo
    npm run dev
    ```
 
-4. Open `http://localhost:3000`.
+5. Open `http://localhost:3000`.
 
 ### Local flow
 
 - The frontend talks to the API at `http://localhost:8080` by default.
 - Local development uses H2 data stored under `backend/data/`.
 - LocalStack provides local S3 and SQS emulation.
-- The local worker long-polls the LocalStack SQS queue and uses the same core
-  handler as production.
-
-### Local image processing modes
-
-The worker supports two vision providers:
-
-- `fake`: deterministic metadata for free local pipeline testing
-- `gemini`: Gemini 2.5 Flash-Lite using `GEMINI_API_KEY`
-
-To call Gemini locally, set these values in `backend/.env`, then recreate the
-worker:
-
-```dotenv
-VISION_PROVIDER=gemini
-GEMINI_API_KEY=your-key
-```
-
-```bash
-cd backend
-docker compose up -d --build --force-recreate image-worker
-```
-
-CloudWatch metrics are disabled locally and emitted as structured logs instead.
+- The Docker Compose Python image processor listens on `http://localhost:8080`
+  inside the Compose network.
+- The Docker Compose Spring worker listens on `http://localhost:8081` and
+  long-polls the LocalStack SQS queue.
+- The API still polls the result queue and finalizes clothing item state.
 
 ### Local verification
 
 Open `http://localhost:3000`, create a local account, and add an item. It
-should move from `PROCESSING` to `READY` after background removal and metadata
-extraction.
+should move from `PROCESSING` to `READY` after the worker publishes a result.
 
 ## Useful Commands
 
@@ -261,11 +279,21 @@ npm test
 npm run build
 ```
 
-Backend and worker logs:
+Backend, worker, and image-processor logs:
 
 ```bash
 cd backend
-docker compose logs -f image-worker
+docker compose logs -f worker image-processor
+```
+
+Manual backend commands:
+
+```bash
+cd backend
+./mvnw -pl api -am install -DskipTests
+./mvnw -f api/pom.xml spring-boot:run -Dspring-boot.run.profiles=local
+./mvnw -pl worker -am install -DskipTests
+./mvnw -f worker/pom.xml spring-boot:run
 ```
 
 LocalStack inspection:
@@ -308,6 +336,7 @@ sign-in also requires the client configuration and Cognito
 - `backend/.env.example` is used by the LocalStack and worker compose setup.
 - The backend can also run against PostgreSQL and Cognito in production via the
   values documented in `backend/.env.example`.
-- Production runs `app.handler` in Lambda. The Lambda worker reads the Gemini
-  key from Secrets Manager, publishes CloudWatch custom metrics, and can reuse
-  prior metadata for repeated image hashes.
+- Production runs separate API, Spring worker, and Python image-processor
+  containers. The Spring worker consumes the SQS processing queue, the Python
+  service performs image processing and metadata extraction, and the API
+  continues polling the result queue.

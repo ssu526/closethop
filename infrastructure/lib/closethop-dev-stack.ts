@@ -1,10 +1,8 @@
-import * as path from "path";
 import {
   CfnOutput,
   Duration,
   RemovalPolicy,
   SecretValue,
-  Size,
   Stack,
   StackProps
 } from "aws-cdk-lib";
@@ -12,17 +10,12 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as ecrAssets from "aws-cdk-lib/aws-ecr-assets";
 import * as iam from "aws-cdk-lib/aws-iam";
-import * as lambda from "aws-cdk-lib/aws-lambda";
-import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
-import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3Notifications from "aws-cdk-lib/aws-s3-notifications";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as sqs from "aws-cdk-lib/aws-sqs";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
 export interface ClosetHopDevStackProps extends StackProps {
@@ -117,61 +110,11 @@ export class ClosetHopDevStack extends Stack {
       { prefix: "staging/" }
     );
 
-    const geminiSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "GeminiApiSecret",
-      props.geminiSecretName
-    );
     const googleSecret = secretsmanager.Secret.fromSecretNameV2(
       this,
       "GoogleOAuthSecret",
       props.googleSecretName
     );
-
-    const workerLogGroup = new logs.LogGroup(this, "ImageWorkerLogs", {
-      logGroupName: `/aws/lambda/${prefix}-image-worker`,
-      retention: isProduction ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
-      removalPolicy: dataRemovalPolicy
-    });
-
-    const imageWorker = new lambda.DockerImageFunction(this, "ImageWorker", {
-      functionName: `${prefix}-image-worker`,
-      code: lambda.DockerImageCode.fromImageAsset(
-        path.join(__dirname, "../.."),
-        {
-          file: "worker/Dockerfile",
-          platform: ecrAssets.Platform.LINUX_AMD64
-        }
-      ),
-      architecture: lambda.Architecture.X86_64,
-      memorySize: 4096,
-      timeout: Duration.minutes(5),
-      ephemeralStorageSize: Size.gibibytes(10),
-      environment: {
-        IMAGE_BUCKET: imageBucket.bucketName,
-        RESULT_QUEUE_URL: resultQueue.queueUrl,
-        PUBLIC_URL: "",
-        GEMINI_SECRET_ARN: geminiSecret.secretArn,
-        VISION_PROVIDER: "gemini",
-        VISION_MODEL: "gemini-2.5-flash-lite",
-        VISION_SCHEMA_VERSION: "2",
-        CLASSIFICATION_PROMPT_PATH: "/prompts/clothing_classifier_prompt.txt",
-        U2NET_HOME: "/opt/rembg-models"
-      },
-      logGroup: workerLogGroup
-    });
-    imageWorker.addEventSource(new lambdaEventSources.SqsEventSource(processingQueue, {
-      batchSize: 1,
-      reportBatchItemFailures: true
-    }));
-    imageBucket.grantReadWrite(imageWorker);
-    resultQueue.grantSendMessages(imageWorker);
-    geminiSecret.grantRead(imageWorker);
-    imageWorker.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["cloudwatch:PutMetricData"],
-      resources: ["*"],
-      conditions: { StringEquals: { "cloudwatch:namespace": "ClosetHop/ImageProcessing" } }
-    }));
 
     const userPool = new cognito.UserPool(this, "UserPool", {
       userPoolName: `${prefix}-users`,
@@ -269,7 +212,9 @@ export class ClosetHopDevStack extends Stack {
       ]
     });
     imageBucket.grantReadWrite(instanceRole);
+    processingQueue.grantConsumeMessages(instanceRole);
     resultQueue.grantConsumeMessages(instanceRole);
+    resultQueue.grantSendMessages(instanceRole);
     backupBucket.grantPut(instanceRole, "postgres/*");
     backupBucket.grantRead(instanceRole, "postgres/*");
     instanceRole.addToPolicy(new iam.PolicyStatement({
@@ -322,14 +267,6 @@ export class ClosetHopDevStack extends Stack {
       ]
     });
 
-    const imageWorkerErrorsAlarm = new cloudwatch.Alarm(this, "ImageWorkerErrorsAlarm", {
-      alarmName: `${prefix}-image-worker-errors`,
-      metric: imageWorker.metricErrors(),
-      threshold: 1,
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
-    });
-    addAlarmAction(imageWorkerErrorsAlarm);
     const processingQueueAgeAlarm = new cloudwatch.Alarm(this, "ProcessingQueueAgeAlarm", {
       alarmName: `${prefix}-image-processing-age`,
       metric: processingQueue.metricApproximateAgeOfOldestMessage(),

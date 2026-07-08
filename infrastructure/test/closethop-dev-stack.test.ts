@@ -81,21 +81,6 @@ describe("ClosetHop EC2 Compose infrastructure", () => {
   test("provisions asynchronous image processing resources", () => {
     const stack = template();
     stack.resourceCountIs("AWS::SQS::Queue", 2);
-    stack.hasResourceProperties("AWS::Lambda::Function", {
-      PackageType: "Image",
-      MemorySize: 4096,
-      Timeout: 300,
-      Environment: {
-        Variables: Match.objectLike({
-          VISION_PROVIDER: "gemini",
-          RESULT_QUEUE_URL: Match.anyValue()
-        })
-      }
-    });
-    stack.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
-      BatchSize: 1,
-      FunctionResponseTypes: ["ReportBatchItemFailures"]
-    });
     stack.hasResourceProperties("Custom::S3BucketNotifications", {
       NotificationConfiguration: {
         QueueConfigurations: Match.arrayWith([
@@ -110,7 +95,8 @@ describe("ClosetHop EC2 Compose infrastructure", () => {
         ])
       }
     });
-    stack.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
+    stack.resourceCountIs("AWS::Lambda::EventSourceMapping", 0);
+    stack.resourceCountIs("AWS::Lambda::Function", 0);
   });
 
   test("provisions an SSM-managed EC2 host for Docker Compose", () => {
@@ -161,7 +147,7 @@ describe("ClosetHop EC2 Compose infrastructure", () => {
       Endpoint: "alerts@example.com"
     });
     stack.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "closethop-prod-image-worker-errors",
+      AlarmName: "closethop-prod-image-processing-age",
       AlarmActions: Match.arrayWith([{ Ref: Match.stringLikeRegexp("AlertTopic") }])
     });
     stack.hasResourceProperties("AWS::CloudWatch::Alarm", {

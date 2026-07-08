@@ -1,6 +1,6 @@
 package com.wardrobe.service.aws;
 
-import com.wardrobe.config.S3Config;
+import com.wardrobe.config.S3Properties;
 import com.wardrobe.exception.ValidationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,7 +26,7 @@ import java.util.UUID;
 @Slf4j
 public class S3Service {
     private final S3Client s3Client;
-    private final S3Config s3Config;
+    private final S3Properties s3Config;
 
     public String uploadFile(MultipartFile file, UUID userId){
         byte[] bytes = readBytes(file);

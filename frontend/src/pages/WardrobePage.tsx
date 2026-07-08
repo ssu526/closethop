@@ -103,6 +103,22 @@ function insertNewItemIntoPage(
   };
 }
 
+function upsertItemIntoPage(
+  current: PageResponse<ClothingItemSummary> | undefined,
+  item: ClothingItemSummary,
+) {
+  if (!current) return current;
+  if (current.content.some((existing) => existing.id === item.id)) {
+    return {
+      ...current,
+      content: current.content.map((existing) =>
+        existing.id === item.id ? item : existing,
+      ),
+    };
+  }
+  return insertNewItemIntoPage(current, item);
+}
+
 function mergePendingItemsIntoPage(
   current: PageResponse<ClothingItemSummary> | undefined,
   pendingItems: ClothingItemSummary[],
@@ -129,6 +145,12 @@ function mergePendingItemsIntoPage(
       totalPages: Math.max(1, Math.ceil(totalElements / size)),
     },
   };
+}
+
+function itemsHasProcessingStatus(
+  current: PageResponse<ClothingItemSummary> | undefined,
+) {
+  return current?.content.some((item) => item.status === "PROCESSING") ?? false;
 }
 
 function incrementProfileCounts(
@@ -187,6 +209,11 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
   const activePendingCreatedItems = pendingCreatedItems.filter(
     (item) => item.page === page && item.query === query && item.category === category,
   );
+  const hasVisibleProcessingItems =
+    activePendingCreatedItems.length > 0 ||
+    itemsHasProcessingStatus(
+      client.getQueryData<PageResponse<ClothingItemSummary>>(itemsQueryKey),
+    );
 
   const items = useQuery({
     queryKey: itemsQueryKey,
@@ -196,6 +223,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
         : api.clothing.list({ page, query, category }),
     placeholderData: keepPreviousData,
     refetchInterval: (result) =>
+      activePendingCreatedItems.length > 0 ||
       result.state.data?.content.some((item) => item.status === "PROCESSING")
         ? 3000
         : false,
@@ -204,10 +232,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
     queryKey: profileQueryKey,
     queryFn: () =>
       viewUserId ? api.users.profile(viewUserId) : api.users.me(),
-    refetchInterval: () =>
-      items.data?.content.some((item) => item.status === "PROCESSING")
-        ? 3000
-        : false,
+    refetchInterval: () => (hasVisibleProcessingItems ? 3000 : false),
   });
   const visibleItems = mergePendingItemsIntoPage(
     items.data,
@@ -412,6 +437,29 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
           entry !== null && entry.item.status !== "PROCESSING",
       );
 
+      terminalItems.forEach((result) => {
+        const summary = toClothingItemSummary(result.item);
+        client.setQueriesData<PageResponse<ClothingItemSummary>>(
+          { queryKey: ["clothing"] },
+          (current) => {
+            if (!current?.content.some((item) => item.id === summary.id)) {
+              return current;
+            }
+            return upsertItemIntoPage(current, summary);
+          },
+        );
+        const isActive =
+          result.trackedItem.page === page &&
+          result.trackedItem.query === query &&
+          result.trackedItem.category === category;
+        if (isActive && page === 0 && matchesWardrobeView(result.item, category, query)) {
+          client.setQueryData<PageResponse<ClothingItemSummary> | undefined>(
+            itemsQueryKey,
+            (current) => upsertItemIntoPage(current, summary),
+          );
+        }
+      });
+
       setPendingCreatedItems((current) => {
         const next = current.filter((trackedItem) => {
           const result = results.find(
@@ -442,7 +490,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [pendingCreatedItems, showToast]);
+  }, [category, client, itemsQueryKey, page, pendingCreatedItems, query, showToast]);
 
   useEffect(() => {
     function closeMenu(event: MouseEvent) {

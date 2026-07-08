@@ -1,6 +1,6 @@
 package com.wardrobe.service.aws;
 
-import com.wardrobe.config.S3Config;
+import com.wardrobe.config.S3Properties;
 import com.wardrobe.entity.ClothingItem;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -14,7 +14,7 @@ import java.time.Duration;
 @RequiredArgsConstructor
 public class ImageAccessService {
     private final S3Presigner presigner;
-    private final S3Config config;
+    private final S3Properties config;
 
     // generating a pre-signed S3 URL
     public String urlFor(ClothingItem item) {

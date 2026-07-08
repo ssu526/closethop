@@ -16,10 +16,10 @@ services:
     networks:
       - internal
 
-  backend:
+  api:
     build:
       context: ../..
-      dockerfile: backend/Dockerfile
+      dockerfile: backend/api/Dockerfile
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: "8080"
@@ -49,6 +49,57 @@ services:
     networks:
       - internal
 
+  worker:
+    build:
+      context: ../..
+      dockerfile: backend/worker/Dockerfile
+    environment:
+      SERVER_PORT: "8081"
+      AWS_REGION: ${AWS_REGION}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      PROCESSING_QUEUE_URL: ${PROCESSING_QUEUE_URL}
+      PROCESSING_RESULT_QUEUE_URL: ${PROCESSING_RESULT_QUEUE_URL}
+      AWS_PUBLIC_URL: ${AWS_PUBLIC_URL:-}
+      IMAGE_PROCESSOR_BASE_URL: http://image-processor:8080
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      image-processor:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - internal
+
+  image-processor:
+    build:
+      context: ../..
+      dockerfile: worker/Dockerfile
+    environment:
+      AWS_REGION: ${AWS_REGION}
+      AWS_DEFAULT_REGION: ${AWS_REGION}
+      IMAGE_BUCKET: ${AWS_S3_BUCKET}
+      PUBLIC_URL: ${AWS_PUBLIC_URL:-}
+      DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-closethop}
+      DATASOURCE_USERNAME: ${POSTGRES_USER:-closethop}
+      DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      VISION_MODEL: ${OUTFIT_AI_MODEL:-gemini-2.5-flash-lite}
+      METRICS_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    networks:
+      - internal
+
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -63,8 +114,10 @@ services:
       fi;
       nginx -g 'daemon off;'"
     depends_on:
-      backend:
+      api:
         condition: service_healthy
+      worker:
+        condition: service_started
     restart: unless-stopped
     networks:
       - internal

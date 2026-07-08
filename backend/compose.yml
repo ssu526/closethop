@@ -19,33 +19,49 @@ services:
       timeout: 3s
       retries: 20
 
-  image-worker:
+  image-processor:
     build:
       context: ..
-      dockerfile: worker/Dockerfile.local
+      dockerfile: worker/Dockerfile
     environment:
       AWS_ACCESS_KEY_ID: dummy
       AWS_SECRET_ACCESS_KEY: dummy
       AWS_DEFAULT_REGION: us-east-1
       AWS_ENDPOINT_URL: http://localstack:4566
       IMAGE_BUCKET: closethop-images
-      JOB_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing
-      RESULT_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing-results
       PUBLIC_URL: http://localhost:4566/closethop-images
-      VISION_PROVIDER: ${VISION_PROVIDER:-fake}
-      VISION_MODEL: ${VISION_MODEL:-gemini-2.5-flash-lite}
-      VISION_SCHEMA_VERSION: "2"
-      CLASSIFICATION_PROMPT_PATH: /prompts/clothing_classifier_prompt.txt
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      VISION_PROVIDER: fake
       METRICS_ENABLED: "false"
-      U2NET_HOME: /models
-    volumes:
-      - worker-models:/models
     depends_on:
       localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: backend/worker/Dockerfile
+    environment:
+      AWS_ACCESS_KEY: dummy
+      AWS_SECRET_KEY: dummy
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_S3_BUCKET: closethop-images
+      PROCESSING_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing
+      PROCESSING_RESULT_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing-results
+      AWS_PUBLIC_URL: http://localhost:4566/closethop-images
+      IMAGE_PROCESSOR_BASE_URL: http://image-processor:8080
+    depends_on:
+      localstack:
+        condition: service_healthy
+      image-processor:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
   localstack-data:
-  worker-models:

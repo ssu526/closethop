@@ -8,9 +8,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
-from urllib.parse import unquote_plus
 
 import boto3
+from flask import Flask, jsonify, request
 from google import genai
 from google.genai import types
 from PIL import Image, ImageOps
@@ -35,11 +35,9 @@ class ClothingMetadata(BaseModel):
 
 
 S3_BUCKET = os.environ["IMAGE_BUCKET"]
-RESULT_QUEUE_URL = os.environ["RESULT_QUEUE_URL"]
-PUBLIC_URL = os.environ["PUBLIC_URL"].rstrip("/")
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash-lite")
 PROVIDER = os.getenv("VISION_PROVIDER", "gemini")
-SCHEMA_VERSION = os.getenv("VISION_SCHEMA_VERSION", "2")
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL") or None
 DATASOURCE_SECRET_ARN = os.getenv("DATASOURCE_SECRET_ARN")
 DATASOURCE_URL = os.getenv("DATASOURCE_URL")
@@ -53,6 +51,8 @@ CLASSIFICATION_PROMPT_PATH = Path(os.getenv(
     "CLASSIFICATION_PROMPT_PATH",
     Path(__file__).resolve().parent / "prompts" / "clothing_classifier_prompt.txt",
 ))
+HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("closethop.image_worker")
@@ -63,7 +63,6 @@ def aws_client(service: str):
 
 
 s3 = aws_client("s3")
-sqs = aws_client("sqs")
 secrets = aws_client("secretsmanager")
 cloudwatch = aws_client("cloudwatch")
 
@@ -88,8 +87,11 @@ def gemini_client():
 
 
 MAX_SIZE = 768
-PRIMARY_SESSION = new_session("isnet-general-use")
-FALLBACK_SESSION = new_session("u2net")
+
+
+@lru_cache(maxsize=2)
+def rembg_session(model_name: str):
+    return new_session(model_name)
 
 
 def normalize_image(source: bytes) -> tuple[bytes, str]:
@@ -122,12 +124,12 @@ def normalize_image(source: bytes) -> tuple[bytes, str]:
 
 
 def remove_background_with_rembg(image: Image.Image) -> Image.Image:
-    result = remove(image, session=PRIMARY_SESSION).convert("RGBA")
+    result = remove(image, session=rembg_session("isnet-general-use")).convert("RGBA")
 
     if is_good_cutout(result):
         return result
 
-    fallback = remove(image, session=FALLBACK_SESSION).convert("RGBA")
+    fallback = remove(image, session=rembg_session("u2net")).convert("RGBA")
 
     if is_good_cutout(fallback):
         return fallback
@@ -330,6 +332,13 @@ class VisionMetadataProvider(Protocol):
     def extract(self, image_bytes: bytes) -> tuple[ClothingMetadata, int, int]: ...
 
 
+class ProcessRequest(BaseModel):
+    userId: str
+    itemId: str
+    version: int
+    sourceKey: str
+
+
 class GeminiVisionMetadataProvider:
     def extract(self, image_bytes: bytes) -> tuple[ClothingMetadata, int, int]:
         prompt = classification_prompt()
@@ -381,10 +390,6 @@ def vision_provider() -> VisionMetadataProvider:
     raise ValueError(f"UNSUPPORTED_VISION_PROVIDER:{PROVIDER}")
 
 
-def publish_result(payload: dict):
-    sqs.send_message(QueueUrl=RESULT_QUEUE_URL, MessageBody=json.dumps(payload))
-
-
 def metric(name: str, value: float, unit: str = "Count"):
     if not METRICS_ENABLED:
         logger.info(json.dumps({
@@ -395,38 +400,13 @@ def metric(name: str, value: float, unit: str = "Count"):
             "unit": unit,
         }))
         return
-    cloudwatch.put_metric_data(
-        Namespace="ClosetHop/ImageProcessing",
-        MetricData=[{"MetricName": name, "Value": value, "Unit": unit}],
-    )
-
-
-def job_from_s3_record(s3_record: dict) -> dict:
-    source_key = unquote_plus(s3_record["s3"]["object"]["key"])
-    parts = source_key.split("/")
-    if len(parts) != 5 or parts[0] != "staging" or parts[4] != "source":
-        raise ValueError("INVALID_STAGING_KEY")
-    return {
-        "userId": parts[1],
-        "itemId": parts[2],
-        "version": int(parts[3]),
-        "sourceKey": source_key,
-    }
-
-
-def jobs_from_s3_event(body: str) -> list[dict]:
-    event = json.loads(body)
-    records = event.get("Records", [])
-    if not records:
-        raise ValueError("EXPECTED_S3_RECORDS")
-    return [job_from_s3_record(record) for record in records]
-
-
-def job_from_s3_event(body: str) -> dict:
-    jobs = jobs_from_s3_event(body)
-    if len(jobs) != 1:
-        raise ValueError("EXPECTED_ONE_S3_RECORD")
-    return jobs[0]
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="ClosetHop/ImageProcessing",
+            MetricData=[{"MetricName": name, "Value": value, "Unit": unit}],
+        )
+    except Exception:
+        logger.exception("Unable to publish CloudWatch metric %s", name)
 
 
 def failure_result(job: dict, error_code: str) -> dict:
@@ -441,7 +421,20 @@ def failure_result(job: dict, error_code: str) -> dict:
     }
 
 
-def process(job: dict):
+def build_public_url(output_key: str) -> str:
+    if not PUBLIC_URL:
+        return output_key
+    return f"{PUBLIC_URL}/{output_key}"
+
+
+def error_code_for_exception(exc: Exception) -> str:
+    candidate = str(exc).strip()
+    if candidate and all(character.isupper() or character.isdigit() or character == "_" for character in candidate):
+        return candidate
+    return "PROCESSING_FAILED"
+
+
+def process(job: dict) -> dict:
     started = time.monotonic()
     item_id = job["itemId"]
     user_id = job["userId"]
@@ -465,41 +458,53 @@ def process(job: dict):
         CacheControl="public,max-age=31536000,immutable",
     )
     result = {
-            "itemId": item_id,
-            "version": version,
-            "status": "READY",
-            "imageUrl": f"{PUBLIC_URL}/{output_key}",
-            "objectKey": output_key,
-            "imageHash": image_hash,
-            "metadata": metadata.model_dump(mode="json"),
-        }
-    publish_result(result)
+        "itemId": item_id,
+        "version": version,
+        "status": "READY",
+        "imageUrl": build_public_url(output_key),
+        "objectKey": output_key,
+        "imageHash": image_hash,
+        "metadata": metadata.model_dump(mode="json"),
+    }
     metric("Processed", 1)
     metric("CacheHit", 1 if cache_hit else 0)
     metric("InputTokens", input_tokens)
     metric("OutputTokens", output_tokens)
     metric("EstimatedVisionCostUSD", input_tokens * 0.10 / 1_000_000 + output_tokens * 0.40 / 1_000_000, "None")
     metric("Latency", (time.monotonic() - started) * 1000, "Milliseconds")
+    return result
 
 
-def handler(event, _context):
-    failures = []
-    for record in event.get("Records", []):
-        job = None
-        try:
-            jobs = jobs_from_s3_event(record["body"])
-            for job in jobs:
-                process(job)
-        except Exception:
-            if job is None:
-                logger.exception("Discarding malformed S3 notification")
-                continue
-            receive_count = int(record.get("attributes", {}).get("ApproximateReceiveCount", "1"))
-            if receive_count < 3:
-                failures.append({"itemIdentifier": record["messageId"]})
-                continue
-            publish_result(failure_result(job, "PROCESSING_FAILED"))
-            metric("Failed", 1)
-        finally:
-            job = None
-    return {"batchItemFailures": failures}
+http_app = Flask(__name__)
+
+
+@http_app.get("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
+@http_app.post("/process")
+def process_http():
+    try:
+        payload = request.get_json(force=True, silent=False)
+        job = ProcessRequest.model_validate(payload).model_dump(mode="json")
+    except ValidationError as exc:
+        return jsonify({
+            "error": "INVALID_REQUEST",
+            "details": exc.errors(),
+        }), 400
+    except Exception:
+        return jsonify({"error": "INVALID_JSON"}), 400
+
+    try:
+        return jsonify(process(job))
+    except ValueError as exc:
+        logger.warning("Deterministic image-processing failure for item %s: %s", job["itemId"], exc)
+        return jsonify(failure_result(job, error_code_for_exception(exc))), 200
+    except Exception:
+        logger.exception("Image-processing service crashed for item %s", job["itemId"])
+        return jsonify({"error": "PROCESSING_UNAVAILABLE"}), 500
+
+
+if __name__ == "__main__":
+    http_app.run(host=HTTP_HOST, port=HTTP_PORT)
