@@ -1,7 +1,8 @@
 # Image worker
 
 Production runs `app.handler` in Lambda. Local development runs
-`local_worker.py`, which long-polls LocalStack SQS and invokes the same handler.
+`local_worker.py`, which long-polls the processing queue in LocalStack SQS and
+invokes the same handler.
 
 Local configuration is provided by `backend/compose.yml`. Supported vision
 providers:

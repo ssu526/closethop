@@ -4,13 +4,12 @@ import os
 import signal
 import time
 
-from app import dlq_handler, handler, sqs
+from app import handler, sqs
 
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("closethop.local_worker")
 JOB_QUEUE_URL = os.environ["JOB_QUEUE_URL"]
-MESSAGE_HANDLER = dlq_handler if os.getenv("DLQ_MODE", "false").lower() == "true" else handler
 running = True
 
 
@@ -36,7 +35,7 @@ def poll_once() -> int:
                 "attributes": message.get("Attributes", {}),
             }]
         }
-        result = MESSAGE_HANDLER(event, None)
+        result = handler(event, None)
         failures = {
             failure["itemIdentifier"]
             for failure in result.get("batchItemFailures", [])

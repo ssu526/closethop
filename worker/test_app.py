@@ -394,24 +394,3 @@ def test_worker_processes_all_s3_records_in_one_message(monkeypatch):
     record, jobs = s3_message_with_multiple_records()
     assert app.handler({"Records": [record]}, None)["batchItemFailures"] == []
     assert processed == jobs
-
-
-def test_dlq_consumer_sends_terminal_fallback_result(monkeypatch):
-    import app
-    published = []
-    monkeypatch.setattr(app, "publish_result", published.append)
-    monkeypatch.setattr(app, "metric", lambda *_args: None)
-    record, _, _ = s3_message("1")
-    assert app.dlq_handler({"Records": [record]}, None)["batchItemFailures"] == []
-    assert published[0]["status"] == "FAILED"
-
-
-def test_dlq_consumer_sends_fallback_for_each_s3_record_in_message(monkeypatch):
-    import app
-    published = []
-    monkeypatch.setattr(app, "publish_result", published.append)
-    monkeypatch.setattr(app, "metric", lambda *_args: None)
-
-    record, jobs = s3_message_with_multiple_records()
-    assert app.dlq_handler({"Records": [record]}, None)["batchItemFailures"] == []
-    assert [result["itemId"] for result in published] == [job["itemId"] for job in jobs]

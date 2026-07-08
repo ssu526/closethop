@@ -490,11 +490,10 @@ def handler(event, _context):
             jobs = jobs_from_s3_event(record["body"])
             for job in jobs:
                 process(job)
-        except Exception as exc:
+        except Exception:
             if job is None:
                 logger.exception("Discarding malformed S3 notification")
                 continue
-            error_code = str(exc)
             receive_count = int(record.get("attributes", {}).get("ApproximateReceiveCount", "1"))
             if receive_count < 3:
                 failures.append({"itemIdentifier": record["messageId"]})
@@ -503,17 +502,4 @@ def handler(event, _context):
             metric("Failed", 1)
         finally:
             job = None
-    return {"batchItemFailures": failures}
-
-
-def dlq_handler(event, _context):
-    failures = []
-    for record in event.get("Records", []):
-        try:
-            for job in jobs_from_s3_event(record["body"]):
-                publish_result(failure_result(job, "PROCESSING_FAILED"))
-            metric("DlqFailed", 1)
-        except Exception:
-            logger.exception("Unable to publish terminal result for DLQ message")
-            failures.append({"itemIdentifier": record["messageId"]})
     return {"batchItemFailures": failures}

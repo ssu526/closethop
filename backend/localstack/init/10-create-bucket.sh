@@ -5,16 +5,6 @@ set -eu
 awslocal s3api head-bucket --bucket closethop-images 2>/dev/null ||
   awslocal s3api create-bucket --bucket closethop-images
 
-#Create dead-letter queue
-DLQ_URL="$(awslocal sqs get-queue-url --queue-name closethop-image-processing-dlq \
-  --query QueueUrl --output text 2>/dev/null ||
-  awslocal sqs create-queue --queue-name closethop-image-processing-dlq \
-    --query QueueUrl --output text)"
-
-# Get DLQ ARN
-DLQ_ARN="$(awslocal sqs get-queue-attributes --queue-url "$DLQ_URL" \
-  --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)"
-
 # Create main processing queue
 PROCESSING_URL="$(awslocal sqs get-queue-url --queue-name closethop-image-processing \
   --query QueueUrl --output text 2>/dev/null ||
@@ -29,11 +19,6 @@ PROCESSING_ARN="$(awslocal sqs get-queue-attributes --queue-url "$PROCESSING_URL
 awslocal sqs set-queue-attributes \
   --queue-url "$PROCESSING_URL" \
   --attributes VisibilityTimeout=60
-
-# Attach DLQ policy
-awslocal sqs set-queue-attributes \
-  --queue-url "$PROCESSING_URL" \
-  --attributes "{\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\"$DLQ_ARN\\\",\\\"maxReceiveCount\\\":\\\"3\\\"}\"}"
 
 # Allow S3 to send messages to SQS
 awslocal sqs set-queue-attributes \
