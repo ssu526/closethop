@@ -1,0 +1,65 @@
+spring:
+  datasource:
+    url: ${DATASOURCE_URL}
+    username: ${DATASOURCE_USERNAME}
+    password: ${DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        default_batch_fetch_size: 50
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${COGNITO_ISSUER}
+
+aws:
+  cognito:
+    client-id: ${COGNITO_CLIENT_ID}
+    issuer: ${COGNITO_ISSUER}
+  s3:
+    bucket-name: ${AWS_S3_BUCKET}
+    region: ${AWS_REGION}
+    access-key:
+    secret-key:
+    endpoint:
+    signed-url-minutes: ${IMAGE_SIGNED_URL_MINUTES:15}
+
+ai:
+  outfit:
+    provider: gemini
+    prompt-path: ${OUTFIT_SUGGESTION_PROMPT_PATH:classpath:prompts/outfit_suggestion_prompt.txt}
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+app:
+  removed-clothing-cleanup-enabled: true
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  structured:
+    format:
+      console: logstash

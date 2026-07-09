@@ -27,24 +27,17 @@ export function ClothingForm({
   }): void;
 }) {
   const isCreate = !item;
-  const requiresReplacement = item?.processingError === "ORIGINAL_UNAVAILABLE";
-  const showImage = isCreate || requiresReplacement;
+  const showImage = isCreate;
   const showCategory = isCreate || Boolean(item);
   const { register, handleSubmit, reset, formState, watch } = useForm<Values>({
     resolver: zodResolver(schema),
     defaultValues: {
-      category:
-        item?.processingError === "CATEGORY_REQUIRED"
-          ? ""
-          : item?.category ?? "",
+      category: item?.category ?? "",
       tags: item?.tags.join(", ") ?? ""
     }
   });
   useEffect(() => reset({
-    category:
-      item?.processingError === "CATEGORY_REQUIRED"
-        ? ""
-        : item?.category ?? "",
+    category: item?.category ?? "",
     tags: item?.tags.join(", ") ?? ""
   }), [item, reset]);
   const image = showImage ? watch("image")?.[0] : undefined;
@@ -116,7 +109,7 @@ export function ClothingForm({
           )}
         </>
       )}
-      <div className={item && !requiresReplacement ? "pt-3" : ""}>
+      <div className={item ? "pt-3" : ""}>
         <Button
           className="w-full"
           type="submit"
@@ -124,11 +117,10 @@ export function ClothingForm({
             busy ||
             Boolean(showImage && !image) ||
             Boolean(isCreate && !category) ||
-            Boolean(item && !requiresReplacement && !category) ||
-            Boolean(requiresReplacement && !category)
+            Boolean(item && !category)
           }
         >
-          {requiresReplacement ? "Upload again" : item ? "Save changes" : "Add to wardrobe"}
+          {item ? "Save changes" : "Add to wardrobe"}
         </Button>
       </div>
     </form>

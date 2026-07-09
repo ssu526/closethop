@@ -19,7 +19,7 @@ services:
   api:
     build:
       context: ../..
-      dockerfile: backend/api/Dockerfile
+      dockerfile: backend/Dockerfile
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: "8080"
@@ -28,7 +28,6 @@ services:
       DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
       AWS_REGION: ${AWS_REGION}
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
-      PROCESSING_RESULT_QUEUE_URL: ${PROCESSING_RESULT_QUEUE_URL}
       COGNITO_ISSUER: ${COGNITO_ISSUER}
       COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
@@ -36,7 +35,6 @@ services:
       OUTFIT_AI_MODEL: ${OUTFIT_AI_MODEL:-gemini-2.5-flash-lite}
       OUTFIT_SUGGESTION_PROMPT_PATH: classpath:prompts/outfit_suggestion_prompt.txt
       IMAGE_SIGNED_URL_MINUTES: ${IMAGE_SIGNED_URL_MINUTES:-15}
-      PROCESSING_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,31 +47,7 @@ services:
     networks:
       - internal
 
-  worker:
-    build:
-      context: ../..
-      dockerfile: backend/worker/Dockerfile
-    environment:
-      SERVER_PORT: "8081"
-      AWS_REGION: ${AWS_REGION}
-      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
-      PROCESSING_QUEUE_URL: ${PROCESSING_QUEUE_URL}
-      PROCESSING_RESULT_QUEUE_URL: ${PROCESSING_RESULT_QUEUE_URL}
-      AWS_PUBLIC_URL: ${AWS_PUBLIC_URL:-}
-      IMAGE_PROCESSOR_BASE_URL: http://image-processor:8080
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 12
-    depends_on:
-      image-processor:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - internal
-
-  image-processor:
+  python-worker:
     build:
       context: ../..
       dockerfile: worker/Dockerfile
@@ -81,6 +55,7 @@ services:
       AWS_REGION: ${AWS_REGION}
       AWS_DEFAULT_REGION: ${AWS_REGION}
       IMAGE_BUCKET: ${AWS_S3_BUCKET}
+      PROCESSING_QUEUE_URL: ${PROCESSING_QUEUE_URL}
       PUBLIC_URL: ${AWS_PUBLIC_URL:-}
       DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-closethop}
       DATASOURCE_USERNAME: ${POSTGRES_USER:-closethop}
@@ -88,6 +63,9 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       VISION_MODEL: ${OUTFIT_AI_MODEL:-gemini-2.5-flash-lite}
       METRICS_ENABLED: "false"
+      SQS_MAX_MESSAGES: ${SQS_MAX_MESSAGES:-1}
+      SQS_WAIT_TIME_SECONDS: ${SQS_WAIT_TIME_SECONDS:-20}
+      SQS_VISIBILITY_TIMEOUT_SECONDS: ${SQS_VISIBILITY_TIMEOUT_SECONDS:-300}
     depends_on:
       postgres:
         condition: service_healthy
@@ -116,7 +94,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      worker:
+      python-worker:
         condition: service_started
     restart: unless-stopped
     networks:

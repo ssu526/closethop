@@ -15,7 +15,12 @@ export interface ClothingItem {
   category: Category | null;
   imageUrl: string | null;
   tags: string[];
-  status: "PROCESSING" | "RETRY" | "NEEDS_INPUT" | "READY" | "DUPLICATE_REVIEW";
+  status:
+    | "WAITING_FOR_UPLOAD"
+    | "PROCESSING"
+    | "READY"
+    | "DUPLICATE_REJECTED"
+    | "FAILED";
   processingError?: string | null;
   duplicateOfId?: string | null;
   removedFromWardrobe: boolean;

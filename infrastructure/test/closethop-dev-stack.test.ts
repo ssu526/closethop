@@ -88,7 +88,7 @@ describe("ClosetHop EC2 Compose infrastructure", () => {
             Events: ["s3:ObjectCreated:*"],
             Filter: {
               Key: {
-                FilterRules: [{ Name: "prefix", Value: "staging/" }]
+                FilterRules: [{ Name: "prefix", Value: "users/" }]
               }
             }
           })
@@ -96,7 +96,6 @@ describe("ClosetHop EC2 Compose infrastructure", () => {
       }
     });
     stack.resourceCountIs("AWS::Lambda::EventSourceMapping", 0);
-    stack.resourceCountIs("AWS::Lambda::Function", 0);
   });
 
   test("provisions an SSM-managed EC2 host for Docker Compose", () => {

@@ -3,14 +3,15 @@ import io
 import json
 import logging
 import os
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlparse
 
 import boto3
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from google import genai
 from google.genai import types
 from PIL import Image, ImageOps
@@ -36,6 +37,7 @@ class ClothingMetadata(BaseModel):
 
 S3_BUCKET = os.environ["IMAGE_BUCKET"]
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+PROCESSING_QUEUE_URL = os.getenv("PROCESSING_QUEUE_URL")
 MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash-lite")
 PROVIDER = os.getenv("VISION_PROVIDER", "gemini")
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL") or None
@@ -47,6 +49,12 @@ DATASOURCE_DB_NAME = os.getenv("DATASOURCE_DB_NAME", "closethop")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SECRET_ARN = os.getenv("GEMINI_SECRET_ARN")
 METRICS_ENABLED = os.getenv("METRICS_ENABLED", "true").lower() == "true"
+WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "1"))
+SQS_MAX_MESSAGES = int(os.getenv("SQS_MAX_MESSAGES", "1"))
+SQS_WAIT_TIME_SECONDS = int(os.getenv("SQS_WAIT_TIME_SECONDS", "20"))
+SQS_VISIBILITY_TIMEOUT_SECONDS = int(os.getenv("SQS_VISIBILITY_TIMEOUT_SECONDS", "300"))
+GEMINI_RETRY_ATTEMPTS = int(os.getenv("GEMINI_RETRY_ATTEMPTS", "3"))
+PROCESSED_UPLOAD_RETRY_ATTEMPTS = int(os.getenv("PROCESSED_UPLOAD_RETRY_ATTEMPTS", "3"))
 CLASSIFICATION_PROMPT_PATH = Path(os.getenv(
     "CLASSIFICATION_PROMPT_PATH",
     Path(__file__).resolve().parent / "prompts" / "clothing_classifier_prompt.txt",
@@ -63,6 +71,7 @@ def aws_client(service: str):
 
 
 s3 = aws_client("s3")
+sqs = aws_client("sqs")
 secrets = aws_client("secretsmanager")
 cloudwatch = aws_client("cloudwatch")
 
@@ -328,15 +337,184 @@ def lookup_reused_metadata(image_hash: str) -> ClothingMetadata | None:
     return metadata
 
 
+def parse_original_key(source_key: str) -> dict | None:
+    parts = source_key.split("/")
+    if len(parts) != 4 or parts[0] != "users" or parts[2] != "original":
+        return None
+    filename = parts[3]
+    if "." not in filename:
+        return None
+    item_id = filename.rsplit(".", 1)[0]
+    return {
+        "userId": parts[1],
+        "itemId": item_id,
+        "sourceKey": source_key,
+    }
+
+
+def jobs_from_s3_event(body: str) -> list[dict]:
+    event = json.loads(body)
+    if isinstance(event, dict) and isinstance(event.get("Message"), str):
+        event = json.loads(event["Message"])
+    if event.get("Event") == "s3:TestEvent":
+        return []
+    jobs = []
+    for record in event.get("Records", []):
+        raw_key = record.get("s3", {}).get("object", {}).get("key")
+        if not raw_key:
+            continue
+        job = parse_original_key(unquote_plus(raw_key))
+        if job:
+            jobs.append(job)
+    return jobs
+
+
+def claim_job(job: dict) -> dict | None:
+    query = """
+        UPDATE clothing_items
+        SET processing_status = 'PROCESSING',
+            uploaded_at = COALESCE(uploaded_at, now()),
+            processing_started_at = now(),
+            processing_deadline_at = now() + interval '10 minutes',
+            processing_error = NULL
+        WHERE id = %s
+          AND processing_status = 'WAITING_FOR_UPLOAD'
+        RETURNING id, user_id, original_s3_key, processing_attempt
+    """
+    with postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (job["itemId"],))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "itemId": str(row[0]),
+                "userId": str(row[1]),
+                "sourceKey": row[2],
+                "attempt": int(row[3] or 1),
+            }
+
+
+def recover_waiting_uploads(limit: int = 10) -> int:
+    query = """
+        SELECT id, original_s3_key
+        FROM clothing_items
+        WHERE processing_status = 'WAITING_FOR_UPLOAD'
+          AND original_s3_key IS NOT NULL
+          AND removed_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT %s
+    """
+    with postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (limit,))
+            rows = cursor.fetchall()
+
+    recovered = 0
+    for item_id, source_key in rows:
+        try:
+            s3.head_object(Bucket=S3_BUCKET, Key=source_key)
+        except Exception:
+            continue
+        claimed = claim_job({"itemId": str(item_id)})
+        if not claimed:
+            continue
+        logger.info("Recovered uploaded item %s without an SQS event", item_id)
+        finalize_claimed_job(claimed)
+        recovered += 1
+    return recovered
+
+
+def ready_with_original(item_id: str, error_code: str):
+    query = """
+        UPDATE clothing_items
+        SET processing_status = 'READY',
+            processed_s3_key = NULL,
+            processing_error = %s,
+            processing_deadline_at = NULL,
+            processed_at = now()
+        WHERE id = %s
+    """
+    with postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (error_code, item_id))
+
+
+def ready_with_processed(job: dict, processed_key: str, image_hash: str, metadata: ClothingMetadata):
+    duplicate_query = """
+        SELECT id
+        FROM clothing_items
+        WHERE user_id = %s
+          AND id <> %s
+          AND image_hash = %s
+          AND processing_status = 'READY'
+          AND removed_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT 1
+    """
+    reject_query = """
+        UPDATE clothing_items
+        SET processing_status = 'DUPLICATE_REJECTED',
+            processed_s3_key = NULL,
+            image_hash = %s,
+            duplicate_of_id = %s,
+            processing_error = 'DUPLICATE_UPLOAD',
+            processing_deadline_at = NULL,
+            processed_at = now(),
+            original_deleted_at = now()
+        WHERE id = %s
+    """
+    ready_query = """
+        UPDATE clothing_items
+        SET processing_status = 'READY',
+            processed_s3_key = %s,
+            image_hash = %s,
+            processing_error = NULL,
+            processing_deadline_at = NULL,
+            processed_at = now(),
+            duplicate_of_id = NULL
+        WHERE id = %s
+    """
+    delete_tags = "DELETE FROM clothing_tags WHERE clothing_item_id = %s"
+    insert_tag = "INSERT INTO clothing_tags (clothing_item_id, tag) VALUES (%s, %s)"
+    with postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(duplicate_query, (job["userId"], job["itemId"], image_hash))
+            duplicate = cursor.fetchone()
+            if duplicate:
+                cursor.execute(reject_query, (image_hash, duplicate[0], job["itemId"]))
+                return {"status": "DUPLICATE_REJECTED", "duplicateOfId": str(duplicate[0])}
+            cursor.execute(ready_query, (processed_key, image_hash, job["itemId"]))
+            cursor.execute(delete_tags, (job["itemId"],))
+            for tag in metadata.tags:
+                cursor.execute(insert_tag, (job["itemId"], tag))
+            return {"status": "READY"}
+
+
+def mark_failed(item_id: str, error_code: str):
+    query = """
+        UPDATE clothing_items
+        SET processing_status = 'FAILED',
+            processed_s3_key = NULL,
+            processing_error = %s,
+            processing_deadline_at = NULL,
+            processed_at = now()
+        WHERE id = %s
+    """
+    with postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (error_code, item_id))
+
+
+def record_original_deleted(item_id: str):
+    query = "UPDATE clothing_items SET original_deleted_at = now() WHERE id = %s"
+    with postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (item_id,))
+
+
 class VisionMetadataProvider(Protocol):
     def extract(self, image_bytes: bytes) -> tuple[ClothingMetadata, int, int]: ...
-
-
-class ProcessRequest(BaseModel):
-    userId: str
-    itemId: str
-    version: int
-    sourceKey: str
 
 
 class GeminiVisionMetadataProvider:
@@ -409,38 +587,18 @@ def metric(name: str, value: float, unit: str = "Count"):
         logger.exception("Unable to publish CloudWatch metric %s", name)
 
 
-def failure_result(job: dict, error_code: str) -> dict:
-    return {
-        "itemId": job["itemId"],
-        "version": int(job["version"]),
-        "status": "FAILED",
-        "objectKey": job["sourceKey"],
-        "imageHash": None,
-        "metadata": {"tags": []},
-        "errorCode": error_code,
-    }
-
-
 def build_public_url(output_key: str) -> str:
     if not PUBLIC_URL:
         return output_key
     return f"{PUBLIC_URL}/{output_key}"
 
 
-def error_code_for_exception(exc: Exception) -> str:
-    candidate = str(exc).strip()
-    if candidate and all(character.isupper() or character.isdigit() or character == "_" for character in candidate):
-        return candidate
-    return "PROCESSING_FAILED"
-
-
 def process(job: dict) -> dict:
     started = time.monotonic()
     item_id = job["itemId"]
     user_id = job["userId"]
-    version = int(job["version"])
     source_key = job["sourceKey"]
-    output_key = f"users/{user_id}/clothing/{item_id}/{version}/processed.webp"
+    output_key = f"users/{user_id}/processed/{item_id}.webp"
 
     source = s3.get_object(Bucket=S3_BUCKET, Key=source_key)["Body"].read()
     normalized, image_hash = normalize_image(source)
@@ -448,18 +606,11 @@ def process(job: dict) -> dict:
     cache_hit = metadata is not None
     input_tokens = output_tokens = 0
     if metadata is None:
-        metadata, input_tokens, output_tokens = vision_provider().extract(normalized)
+        metadata, input_tokens, output_tokens = extract_metadata_with_fallback(normalized)
 
-    s3.put_object(
-        Bucket=S3_BUCKET,
-        Key=output_key,
-        Body=normalized,
-        ContentType="image/webp",
-        CacheControl="public,max-age=31536000,immutable",
-    )
+    put_processed_with_retry(output_key, normalized)
     result = {
         "itemId": item_id,
-        "version": version,
         "status": "READY",
         "imageUrl": build_public_url(output_key),
         "objectKey": output_key,
@@ -475,6 +626,128 @@ def process(job: dict) -> dict:
     return result
 
 
+def extract_metadata_with_fallback(image_bytes: bytes) -> tuple[ClothingMetadata, int, int]:
+    last_error = None
+    for _ in range(max(1, GEMINI_RETRY_ATTEMPTS)):
+        try:
+            return vision_provider().extract(image_bytes)
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Gemini classification failed; retrying if attempts remain: %s", exc)
+    logger.warning("Gemini classification failed permanently; continuing without tags: %s", last_error)
+    return ClothingMetadata(tags=[]), 0, 0
+
+
+def put_processed_with_retry(output_key: str, normalized: bytes):
+    last_error = None
+    for _ in range(max(1, PROCESSED_UPLOAD_RETRY_ATTEMPTS)):
+        try:
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=output_key,
+                Body=normalized,
+                ContentType="image/webp",
+                CacheControl="public,max-age=31536000,immutable",
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Processed image upload failed; retrying if attempts remain: %s", exc)
+    raise RuntimeError("PROCESSED_UPLOAD_FAILED") from last_error
+
+
+def finalize_claimed_job(job: dict):
+    processed_key = None
+    try:
+        result = process(job)
+        processed_key = result["objectKey"]
+    except ValueError as exc:
+        logger.warning("Background removal failed for item %s; using original: %s", job["itemId"], exc)
+        ready_with_original(job["itemId"], "BACKGROUND_REMOVAL_FAILED_USING_ORIGINAL")
+        return
+    except RuntimeError as exc:
+        if str(exc) == "PROCESSED_UPLOAD_FAILED":
+            logger.warning("Processed upload failed for item %s; using original", job["itemId"])
+            ready_with_original(job["itemId"], "PROCESSED_UPLOAD_FAILED_USING_ORIGINAL")
+            return
+        raise
+
+    metadata = ClothingMetadata.model_validate(result.get("metadata") or {"tags": []})
+    try:
+        outcome = ready_with_processed(job, processed_key, result["imageHash"], metadata)
+    except Exception:
+        if processed_key:
+            delete_object_quietly(processed_key)
+        raise
+    if outcome["status"] == "DUPLICATE_REJECTED":
+        delete_object_quietly(job["sourceKey"])
+        if processed_key:
+            delete_object_quietly(processed_key)
+        return
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=job["sourceKey"])
+        record_original_deleted(job["itemId"])
+    except Exception:
+        logger.exception("Unable to delete original image %s after successful processing", job["sourceKey"])
+
+
+def delete_object_quietly(key: str):
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=key)
+    except Exception:
+        logger.warning("Unable to delete S3 object %s", key, exc_info=True)
+
+
+def handle_sqs_message(message: dict):
+    jobs = jobs_from_s3_event(message.get("Body", ""))
+    for job in jobs:
+        claimed = claim_job(job)
+        if not claimed:
+            logger.info("Skipping duplicate or stale upload event for %s", job.get("itemId"))
+            continue
+        finalize_claimed_job(claimed)
+
+
+def run_worker():
+    if not PROCESSING_QUEUE_URL:
+        raise ValueError("PROCESSING_QUEUE_URL_REQUIRED")
+    while True:
+        response = sqs.receive_message(
+            QueueUrl=PROCESSING_QUEUE_URL,
+            MaxNumberOfMessages=SQS_MAX_MESSAGES,
+            WaitTimeSeconds=SQS_WAIT_TIME_SECONDS,
+            VisibilityTimeout=SQS_VISIBILITY_TIMEOUT_SECONDS,
+        )
+        for message in response.get("Messages", []):
+            try:
+                handle_sqs_message(message)
+                sqs.delete_message(
+                    QueueUrl=PROCESSING_QUEUE_URL,
+                    ReceiptHandle=message["ReceiptHandle"],
+                )
+            except Exception:
+                logger.exception("Unable to process SQS message %s", message.get("MessageId"))
+        try:
+            recover_waiting_uploads()
+        except Exception:
+            logger.exception("Unable to recover waiting uploads")
+
+
+_worker_thread_started = False
+
+
+def start_background_worker():
+    global _worker_thread_started
+    if _worker_thread_started:
+        return
+    if not PROCESSING_QUEUE_URL:
+        return
+    if os.getenv("START_SQS_WORKER", "true").lower() != "true":
+        return
+    threading.Thread(target=run_worker, daemon=True).start()
+    _worker_thread_started = True
+
+
 http_app = Flask(__name__)
 
 
@@ -483,27 +756,7 @@ def health():
     return jsonify({"status": "ok"})
 
 
-@http_app.post("/process")
-def process_http():
-    try:
-        payload = request.get_json(force=True, silent=False)
-        job = ProcessRequest.model_validate(payload).model_dump(mode="json")
-    except ValidationError as exc:
-        return jsonify({
-            "error": "INVALID_REQUEST",
-            "details": exc.errors(),
-        }), 400
-    except Exception:
-        return jsonify({"error": "INVALID_JSON"}), 400
-
-    try:
-        return jsonify(process(job))
-    except ValueError as exc:
-        logger.warning("Deterministic image-processing failure for item %s: %s", job["itemId"], exc)
-        return jsonify(failure_result(job, error_code_for_exception(exc))), 200
-    except Exception:
-        logger.exception("Image-processing service crashed for item %s", job["itemId"])
-        return jsonify({"error": "PROCESSING_UNAVAILABLE"}), 500
+start_background_worker()
 
 
 if __name__ == "__main__":

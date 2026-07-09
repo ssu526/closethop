@@ -1,0 +1,44 @@
+spring:
+  profiles:
+    active: local
+
+  datasource:
+    url: ${TEST_DATASOURCE_URL:jdbc:postgresql://localhost:5432/closethop_test}
+    username: ${TEST_DATASOURCE_USERNAME:closethop}
+    password: ${TEST_DATASOURCE_PASSWORD:closethop}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+aws:
+  s3:
+    bucket-name: test-closethop-images
+    region: us-east-1
+    access-key: dummy
+    secret-key: dummy
+    endpoint:
+
+ai:
+  outfit:
+    provider: fake
+    model: gemini-2.5-flash-lite
+    api-key:
+    prompt-path: classpath:prompts/outfit_suggestion_prompt.txt
+    max-candidates: 100
+    max-prompt-bytes: 65536
+    max-suggestions: 3
+    bulkhead:
+      max-concurrent-requests: 4
+      acquire-timeout-ms: 250
+    retry:
+      max-attempts: 2
+      backoff-min-ms: 200
+      backoff-jitter-ms: 200
+    circuit-breaker:
+      failure-threshold: 5
+      open-duration-ms: 30000

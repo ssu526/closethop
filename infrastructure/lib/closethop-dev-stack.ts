@@ -13,6 +13,7 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3Notifications from "aws-cdk-lib/aws-s3-notifications";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as sqs from "aws-cdk-lib/aws-sqs";
@@ -33,6 +34,7 @@ export class ClosetHopDevStack extends Stack {
 
     const prefix = `closethop-${props.environmentName}`;
     const isProduction = props.environmentName === "prod";
+    const frontendOrigin = new URL(props.callbackUrl).origin;
     const dataRemovalPolicy = isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
     const alertTopic = props.alertEmail
       ? new sns.Topic(this, "AlertTopic", {
@@ -57,12 +59,28 @@ export class ClosetHopDevStack extends Stack {
       versioned: isProduction,
       removalPolicy: dataRemovalPolicy,
       autoDeleteObjects: !isProduction,
+      cors: [
+        {
+          allowedMethods: [
+            s3.HttpMethods.GET,
+            s3.HttpMethods.HEAD,
+            s3.HttpMethods.PUT
+          ],
+          allowedOrigins: [
+            frontendOrigin,
+            "http://localhost:3000",
+            "http://localhost:5173"
+          ],
+          allowedHeaders: ["*"],
+          exposedHeaders: ["ETag"],
+          maxAge: 300
+        }
+      ],
       lifecycleRules: [
         {
-          id: "ExpireStagingUploads",
-          prefix: "staging/",
+          id: "AbortIncompleteUserUploads",
+          prefix: "users/",
           abortIncompleteMultipartUploadAfter: Duration.days(1),
-          expiration: Duration.days(7)
         }
       ]
     });
@@ -84,16 +102,21 @@ export class ClosetHopDevStack extends Stack {
       ]
     });
 
+    const processingDeadLetterQueue = new sqs.Queue(this, "ProcessingDeadLetterQueue", {
+      queueName: `${prefix}-image-processing-dlq`,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(4)
+    });
     const processingQueue = new sqs.Queue(this, "ProcessingQueue", {
       queueName: `${prefix}-image-processing`,
       encryption: sqs.QueueEncryption.SQS_MANAGED,
-      visibilityTimeout: Duration.minutes(6)
-    });
-    const resultQueue = new sqs.Queue(this, "ProcessingResultQueue", {
-      queueName: `${prefix}-image-processing-results`,
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      visibilityTimeout: Duration.seconds(30),
-      retentionPeriod: Duration.days(4)
+      visibilityTimeout: Duration.minutes(5),
+      retentionPeriod: Duration.days(4),
+      receiveMessageWaitTime: Duration.seconds(20),
+      deadLetterQueue: {
+        queue: processingDeadLetterQueue,
+        maxReceiveCount: 3
+      }
     });
     processingQueue.addToResourcePolicy(new iam.PolicyStatement({
       principals: [new iam.ServicePrincipal("s3.amazonaws.com")],
@@ -107,7 +130,7 @@ export class ClosetHopDevStack extends Stack {
     imageBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
       new s3Notifications.SqsDestination(processingQueue),
-      { prefix: "staging/" }
+      { prefix: "users/" }
     );
 
     const googleSecret = secretsmanager.Secret.fromSecretNameV2(
@@ -213,8 +236,6 @@ export class ClosetHopDevStack extends Stack {
     });
     imageBucket.grantReadWrite(instanceRole);
     processingQueue.grantConsumeMessages(instanceRole);
-    resultQueue.grantConsumeMessages(instanceRole);
-    resultQueue.grantSendMessages(instanceRole);
     backupBucket.grantPut(instanceRole, "postgres/*");
     backupBucket.grantRead(instanceRole, "postgres/*");
     instanceRole.addToPolicy(new iam.PolicyStatement({
@@ -275,14 +296,6 @@ export class ClosetHopDevStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
     });
     addAlarmAction(processingQueueAgeAlarm);
-    const resultQueueAgeAlarm = new cloudwatch.Alarm(this, "ResultQueueAgeAlarm", {
-      alarmName: `${prefix}-image-result-age`,
-      metric: resultQueue.metricApproximateAgeOfOldestMessage(),
-      threshold: 120,
-      evaluationPeriods: 2,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
-    });
-    addAlarmAction(resultQueueAgeAlarm);
     const instanceStatusAlarm = new cloudwatch.Alarm(this, "Ec2StatusCheckAlarm", {
       alarmName: `${prefix}-ec2-status-check`,
       metric: new cloudwatch.Metric({
@@ -335,7 +348,6 @@ export class ClosetHopDevStack extends Stack {
       value: `${userPoolDomain.baseUrl()}/oauth2/idpresponse`
     });
     new CfnOutput(this, "ProcessingQueueUrl", { value: processingQueue.queueUrl });
-    new CfnOutput(this, "ProcessingResultQueueUrl", { value: resultQueue.queueUrl });
     if (alertTopic) {
       new CfnOutput(this, "AlertTopicArn", { value: alertTopic.topicArn });
     }

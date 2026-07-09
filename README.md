@@ -1,7 +1,7 @@
 # ClosetHop
 
 ClosetHop is a wardrobe management app with a React frontend, a Spring Boot API,
-and dedicated background workers.
+and a Python image-processing worker.
 
 ## Architecture
 
@@ -15,14 +15,12 @@ flowchart LR
   V -->|/api rewrite| N[nginx on EC2]
   N --> B[Spring Boot container]
   B --> P[(Postgres on EBS)]
-  B --> S3[(Private S3 image bucket)]
-  S3 -->|staging upload events| Q[SQS processing queue]
-  Q --> W[Spring worker container]
-  W --> H[Python image processor]
-  H --> S3
-  H --> P
-  W --> R[SQS result queue]
-  B -->|polls results| R
+  B -->|presigned upload URL| S3[(Private S3 image bucket)]
+  V -->|direct PUT| S3
+  S3 -->|ObjectCreated original events| Q[SQS processing queue]
+  Q --> W[Python worker container]
+  W --> S3
+  W --> P
   BK[pg_dump backup job] --> BS3[(S3 backup bucket)]
   V --> C[Cognito hosted auth]
 ```
@@ -31,21 +29,21 @@ Production request flow starts in Vercel, where `/api/*` is rewritten to nginx
 on a single EC2 instance. nginx proxies requests to the Spring Boot container,
 which uses a Postgres container persisted on EBS.
 
-Image uploads land in a private S3 bucket under a staging prefix. S3 event
-notifications push work to SQS, a Spring worker container claims the job and
-delegates image processing to a private Python HTTP service, and the backend
-polls the result queue to finalize wardrobe state. A scheduled backup job
-writes Postgres dumps to a separate S3 backup bucket.
+Image uploads go directly from the browser to a private S3 bucket using
+presigned URLs issued by Spring. S3 ObjectCreated notifications push original
+image work to SQS, and the Python worker atomically claims rows in Postgres,
+processes images, detects duplicates, and writes final item state directly. A
+scheduled backup job writes Postgres dumps to a separate S3 backup bucket.
+
+See [`docs/architecture.md`](docs/architecture.md) for the detailed upload
+state diagram, failure flows, and cleanup jobs.
 
 
 ## Project Layout
 
 - `frontend/` React + TypeScript UI
-- `backend/` multi-module Spring Boot build
-  - `backend/api/` HTTP API
-  - `backend/shared/` shared DTOs and configuration properties
-  - `backend/worker/` SQS worker
-- `worker/` Python image-processing service used by the Spring worker
+- `backend/` Spring Boot HTTP API
+- `worker/` Python SQS image-processing worker
 - `infrastructure/` AWS CDK infrastructure for production
 - `deploy/ec2/` EC2 deployment configuration, including the production app stack
   in [`deploy/ec2/compose.prod.yml`](deploy/ec2/compose.prod.yml)
@@ -124,7 +122,6 @@ Edit `.env` using stack outputs:
 - `AWS_S3_BUCKET` from `ImageBucketName`
 - `BACKUP_BUCKET` from `DatabaseBackupBucketName`
 - `PROCESSING_QUEUE_URL` from `ProcessingQueueUrl`
-- `PROCESSING_RESULT_QUEUE_URL` from `ProcessingResultQueueUrl`
 - `COGNITO_ISSUER` from `CognitoIssuer`
 - `COGNITO_CLIENT_ID` from `UserPoolClientId`
 - `CORS_ALLOWED_ORIGINS` set to the Vercel app origin
@@ -193,11 +190,12 @@ back to `index.html` for client-side routes.
 
 
 ## Start Locally
-In local development, the app uses H2 for the backend database and LocalStack for S3 and SQS so the full upload pipeline can run without AWS.
+In local development, the app uses Compose-managed Postgres and LocalStack for
+S3 and SQS so the full upload pipeline can run without AWS.
 
 
-1. Start LocalStack, the Python image processor, and the Spring worker from the
-   backend compose file:
+1. Start LocalStack, Postgres, and the Python image worker from the backend
+   compose file:
 
    ```bash
    cd backend
@@ -209,24 +207,11 @@ In local development, the app uses H2 for the backend database and LocalStack fo
 
    ```bash
    cd backend
-   ./mvnw -pl api -am install -DskipTests
-   ./mvnw -f api/pom.xml spring-boot:run -Dspring-boot.run.profiles=local
+   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
    ```
 
-   The first command installs the shared module into your local Maven cache.
-   The second command runs the actual API module instead of the parent
-   aggregator project.
-
-3. Optional: start the Spring worker manually in a third terminal if you are
-   not using the Docker Compose worker:
-
-   ```bash
-   cd backend
-   ./mvnw -pl worker -am install -DskipTests
-   ./mvnw -f worker/pom.xml spring-boot:run
-   ```
-
-   If you also skip the Compose-managed Python service, run it separately:
+3. Optional: if you do not use Docker Compose for the worker, start the Python
+   worker manually in a third terminal:
 
    ```bash
    cd worker
@@ -235,7 +220,11 @@ In local development, the app uses H2 for the backend database and LocalStack fo
    AWS_SECRET_ACCESS_KEY=dummy \
    AWS_DEFAULT_REGION=us-east-1 \
    AWS_ENDPOINT_URL=http://localhost:4566 \
+   DATASOURCE_URL=jdbc:postgresql://localhost:5432/closethop \
+   DATASOURCE_USERNAME=closethop \
+   DATASOURCE_PASSWORD=closethop \
    IMAGE_BUCKET=closethop-images \
+   PROCESSING_QUEUE_URL=http://localhost:4566/000000000000/closethop-image-processing \
    PUBLIC_URL=http://localhost:4566/closethop-images \
    VISION_PROVIDER=fake \
    METRICS_ENABLED=false \
@@ -256,18 +245,18 @@ In local development, the app uses H2 for the backend database and LocalStack fo
 ### Local flow
 
 - The frontend talks to the API at `http://localhost:8080` by default.
-- Local development uses H2 data stored under `backend/data/`.
+- Local development uses Postgres from Docker Compose.
 - LocalStack provides local S3 and SQS emulation.
-- The Docker Compose Python image processor listens on `http://localhost:8080`
-  inside the Compose network.
-- The Docker Compose Spring worker listens on `http://localhost:8081` and
-  long-polls the LocalStack SQS queue.
-- The API still polls the result queue and finalizes clothing item state.
+- The frontend requests a presigned upload URL from Spring, uploads the image
+  directly to S3, then polls Spring for item status.
+- The Python worker long-polls the LocalStack SQS queue and updates Postgres
+  directly after processing.
 
 ### Local verification
 
 Open `http://localhost:3000`, create a local account, and add an item. It
-should move from `PROCESSING` to `READY` after the worker publishes a result.
+should move from `WAITING_FOR_UPLOAD` to `PROCESSING` to `READY` after the
+Python worker handles the S3 event.
 
 ## Useful Commands
 
@@ -279,29 +268,24 @@ npm test
 npm run build
 ```
 
-Backend, worker, and image-processor logs:
+Local Compose service logs:
 
 ```bash
 cd backend
-docker compose logs -f worker image-processor
+docker compose logs -f localstack postgres
 ```
 
 Manual backend commands:
 
 ```bash
 cd backend
-./mvnw -pl api -am install -DskipTests
-./mvnw -f api/pom.xml spring-boot:run -Dspring-boot.run.profiles=local
-./mvnw -pl worker -am install -DskipTests
-./mvnw -f worker/pom.xml spring-boot:run
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
 LocalStack inspection:
 
 ```bash
 cd backend
-docker compose exec localstack awslocal sqs list-queues
-docker compose exec localstack awslocal dynamodb scan --table-name wardrobe-vision-metadata-cache
 docker compose exec localstack awslocal s3 ls s3://closethop-images --recursive
 ```
 
@@ -333,10 +317,9 @@ sign-in also requires the client configuration and Cognito
 ## Configuration Notes
 
 - `frontend/.env.example` controls the API base URL and auth mode.
-- `backend/.env.example` is used by the LocalStack and worker compose setup.
+- `backend/.env.example` is used by the backend LocalStack/Postgres compose setup.
 - The backend can also run against PostgreSQL and Cognito in production via the
   values documented in `backend/.env.example`.
-- Production runs separate API, Spring worker, and Python image-processor
-  containers. The Spring worker consumes the SQS processing queue, the Python
-  service performs image processing and metadata extraction, and the API
-  continues polling the result queue.
+- Production runs separate API and Python worker containers. The Python worker
+  consumes the SQS processing queue, performs image processing and metadata
+  extraction, and updates Postgres directly.

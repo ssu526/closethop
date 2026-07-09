@@ -88,59 +88,60 @@ describe("API client", () => {
     expect(unauthorized).toHaveBeenCalledOnce();
   });
 
-  it("builds multipart clothing uploads", async () => {
-    const OriginalBlob = globalThis.Blob;
-    const blobSpy = vi.fn((blobParts?: BlobPart[], options?: BlobPropertyBag) => new OriginalBlob(blobParts, options));
-    vi.stubGlobal("Blob", blobSpy);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ id: "1" }), { status: 200, headers: { "Content-Type": "application/json" } })
-    );
-    configureApi(async () => "token", () => undefined);
-    await api.clothing.create({
+  it("creates direct S3 clothing uploads", async () => {
+    const createdItem = {
+      id: "1",
       category: "TOPS",
-      image: new File(["image"], "shirt.jpg", { type: "image/jpeg" })
+      imageUrl: "https://images.example/users/user-1/original/1.jpg",
+      status: "PROCESSING",
+      processingError: null,
+      duplicateOfId: null,
+      removedFromWardrobe: false,
+      subcategory: null,
+      colors: [],
+      pattern: null,
+      materials: [],
+      seasons: [],
+      occasions: [],
+      userId: "user-1",
+      tags: [],
+      createdAt: "2026-07-08T16:00:00",
+      updatedAt: "2026-07-08T16:00:00"
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          itemId: "1",
+          uploadUrl: "https://s3.example/upload",
+          originalS3Key: "users/user-1/original/1.jpg",
+          expiresAt: "2026-07-08T16:00:00",
+          item: { id: "1", status: "WAITING_FOR_UPLOAD" }
+        }), { status: 201, headers: { "Content-Type": "application/json" } })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(createdItem), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+    configureApi(async () => "token", () => undefined);
+    const image = new File(["image"], "shirt.jpg", { type: "image/jpeg" });
+    const result = await api.clothing.create({
+      category: "TOPS",
+      image
     });
-    const request = fetchMock.mock.calls[0][1];
-    expect(request?.body).toBeInstanceOf(FormData);
-    const item = (request?.body as FormData).get("item");
-    expect(item).toBeInstanceOf(OriginalBlob);
-    expect(blobSpy).toHaveBeenCalledWith([JSON.stringify({ category: "TOPS" })], { type: "application/json" });
-    expect(new Headers(request?.headers).has("Content-Type")).toBe(false);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8080/api/clothing/upload-url");
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(JSON.stringify({
+      category: "TOPS",
+      contentType: "image/jpeg"
+    }));
+    expect(fetchMock.mock.calls[1][0]).toBe("https://s3.example/upload");
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("PUT");
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(image);
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("Content-Type")).toBe("image/jpeg");
+    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8080/api/clothing/1");
+    expect(result).toEqual(createdItem);
   });
 
-  it("builds multipart replacement uploads", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ id: "item-1" }), { status: 202, headers: { "Content-Type": "application/json" } })
-    );
-    configureApi(async () => "token", () => undefined);
-
-    await api.clothing.replaceMissingUpload(
-      "item-1",
-      "TOPS",
-      ["cotton"],
-      new File(["image"], "shirt.png", { type: "image/png" })
-    );
-
-    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8080/api/clothing/item-1/replacement");
-    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
-    expect(fetchMock.mock.calls[0][1]?.body).toBeInstanceOf(FormData);
-    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).has("Content-Type")).toBe(false);
-  });
-
-  it("keeps a processed duplicate when the user confirms it", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ id: "item-1", status: "READY" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      })
-    );
-    configureApi(async () => "token", () => undefined);
-
-    await api.clothing.keepDuplicate("item-1");
-
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://localhost:8080/api/clothing/item-1/duplicate/keep"
-    );
-    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
-  });
 });

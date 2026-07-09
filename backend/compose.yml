@@ -7,7 +7,6 @@ services:
     environment:
       SERVICES: s3,sqs
       AWS_DEFAULT_REGION: us-east-1
-      SQS_ENDPOINT_STRATEGY: path
       PERSISTENCE: "1"
       DEBUG: ${LOCALSTACK_DEBUG:-0}
     volumes:
@@ -19,7 +18,21 @@ services:
       timeout: 3s
       retries: 20
 
-  image-processor:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: closethop
+      POSTGRES_USER: closethop
+      POSTGRES_PASSWORD: closethop
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U closethop -d closethop"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  python-worker:
     build:
       context: ..
       dockerfile: worker/Dockerfile
@@ -28,40 +41,24 @@ services:
       AWS_SECRET_ACCESS_KEY: dummy
       AWS_DEFAULT_REGION: us-east-1
       AWS_ENDPOINT_URL: http://localstack:4566
+      DATASOURCE_URL: jdbc:postgresql://postgres:5432/closethop
+      DATASOURCE_USERNAME: closethop
+      DATASOURCE_PASSWORD: closethop
       IMAGE_BUCKET: closethop-images
+      PROCESSING_QUEUE_URL: http://localstack:4566/000000000000/closethop-image-processing
       PUBLIC_URL: http://localhost:4566/closethop-images
       VISION_PROVIDER: fake
       METRICS_ENABLED: "false"
     depends_on:
       localstack:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 12
-    restart: unless-stopped
-
-  worker:
-    build:
-      context: ..
-      dockerfile: backend/worker/Dockerfile
-    environment:
-      AWS_ACCESS_KEY: dummy
-      AWS_SECRET_KEY: dummy
-      AWS_REGION: us-east-1
-      AWS_ENDPOINT: http://localstack:4566
-      AWS_S3_BUCKET: closethop-images
-      PROCESSING_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing
-      PROCESSING_RESULT_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/closethop-image-processing-results
-      AWS_PUBLIC_URL: http://localhost:4566/closethop-images
-      IMAGE_PROCESSOR_BASE_URL: http://image-processor:8080
-    depends_on:
-      localstack:
-        condition: service_healthy
-      image-processor:
-        condition: service_healthy
-    restart: unless-stopped
 
 volumes:
   localstack-data:

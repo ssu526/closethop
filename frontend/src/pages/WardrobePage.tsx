@@ -13,7 +13,6 @@ import {
   Plus,
   Search,
   Trash2,
-  RotateCcw,
   Sparkles,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -119,6 +118,24 @@ function upsertItemIntoPage(
   return insertNewItemIntoPage(current, item);
 }
 
+function removeItemFromPage(
+  current: PageResponse<ClothingItemSummary> | undefined,
+  itemId: string,
+) {
+  if (!current?.content.some((item) => item.id === itemId)) return current;
+  const content = current.content.filter((item) => item.id !== itemId);
+  const totalElements = Math.max(0, current.page.totalElements - 1);
+  return {
+    ...current,
+    content,
+    page: {
+      ...current.page,
+      totalElements,
+      totalPages: Math.max(1, Math.ceil(totalElements / (current.page.size || 1))),
+    },
+  };
+}
+
 function mergePendingItemsIntoPage(
   current: PageResponse<ClothingItemSummary> | undefined,
   pendingItems: ClothingItemSummary[],
@@ -150,7 +167,29 @@ function mergePendingItemsIntoPage(
 function itemsHasProcessingStatus(
   current: PageResponse<ClothingItemSummary> | undefined,
 ) {
-  return current?.content.some((item) => item.status === "PROCESSING") ?? false;
+  return current?.content.some((item) => isUploadInFlight(item.status)) ?? false;
+}
+
+function isUploadInFlight(status: ClothingItem["status"]) {
+  return status === "WAITING_FOR_UPLOAD" || status === "PROCESSING";
+}
+
+function isVisibleWardrobeItem(item: ClothingItemSummary) {
+  return item.status !== "DUPLICATE_REJECTED";
+}
+
+function clothingStatusLabel(status: ClothingItem["status"]) {
+  switch (status) {
+    case "WAITING_FOR_UPLOAD":
+    case "PROCESSING":
+      return "Processing";
+    case "DUPLICATE_REJECTED":
+      return "Duplicate rejected";
+    case "FAILED":
+      return "Upload failed";
+    case "READY":
+      return "Ready";
+  }
 }
 
 function incrementProfileCounts(
@@ -185,10 +224,6 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
   const [category, setCategory] = useState<string>(categories[0]);
   const [editing, setEditing] = useState<ClothingItem | undefined>();
   const [deleting, setDeleting] = useState<ClothingItemSummary | undefined>();
-  const [duplicateReview, setDuplicateReview] = useState<{
-    item: ClothingItem;
-    original: ClothingItem;
-  }>();
   const [formOpen, setFormOpen] = useState(false);
   const [suggestionOpen, setSuggestionOpen] = useState(false);
   const [error, setError] = useState("");
@@ -224,7 +259,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
     placeholderData: keepPreviousData,
     refetchInterval: (result) =>
       activePendingCreatedItems.length > 0 ||
-      result.state.data?.content.some((item) => item.status === "PROCESSING")
+      result.state.data?.content.some((item) => isUploadInFlight(item.status))
         ? 3000
         : false,
   });
@@ -238,6 +273,12 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
     items.data,
     activePendingCreatedItems.map((item) => item.item),
   );
+  const renderedItems = visibleItems
+    ? {
+        ...visibleItems,
+        content: visibleItems.content.filter(isVisibleWardrobeItem),
+      }
+    : visibleItems;
   const refresh = () => {
     client.invalidateQueries({ queryKey: ["clothing"] });
     client.invalidateQueries({ queryKey: profileQueryKey });
@@ -265,7 +306,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
         incrementProfileCounts(current, createdItem),
       );
       setPendingCreatedItems((current) =>
-        createdItem.status === "PROCESSING" &&
+        isUploadInFlight(createdItem.status) &&
         Boolean(createdItem.category) &&
         matchesWardrobeQuery(createdItem, query)
           ? [
@@ -304,34 +345,6 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
     onError: (reason) =>
       setError(reason instanceof Error ? reason.message : "Update failed."),
   });
-  const replaceMissingUpload = useMutation({
-    mutationFn: (values: {
-      category: string;
-      tags: string[];
-      image?: File;
-    }) => {
-      if (!values.image) throw new Error("Choose a photograph.");
-      return api.clothing.replaceMissingUpload(
-        editing!.id,
-        values.category,
-        values.tags,
-        values.image,
-      );
-    },
-    onSuccess: () => {
-      setEditing(undefined);
-      setFormOpen(false);
-      refresh();
-    },
-    onError: (reason) =>
-      setError(reason instanceof Error ? reason.message : "Upload failed."),
-  });
-  const retry = useMutation({
-    mutationFn: api.clothing.retry,
-    onSuccess: refresh,
-    onError: (reason) =>
-      setError(reason instanceof Error ? reason.message : "Retry failed."),
-  });
   const remove = useMutation({
     mutationFn: api.clothing.delete,
     onSuccess: () => {
@@ -340,30 +353,6 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
     },
     onError: (reason) =>
       setError(reason instanceof Error ? reason.message : "Delete failed."),
-  });
-  const keepDuplicate = useMutation({
-    mutationFn: (id: string) => api.clothing.keepDuplicate(id),
-    onSuccess: () => {
-      setDuplicateReview(undefined);
-      refresh();
-    },
-    onError: (reason) =>
-      setError(
-        reason instanceof Error ? reason.message : "Could not keep both items.",
-      ),
-  });
-  const cancelDuplicate = useMutation({
-    mutationFn: api.clothing.delete,
-    onSuccess: () => {
-      setDuplicateReview(undefined);
-      refresh();
-    },
-    onError: (reason) =>
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Could not cancel this item.",
-      ),
   });
   const visibility = useMutation({
     mutationFn: api.users.setVisibility,
@@ -405,7 +394,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
           item.category === category;
         if (!isActive) return true;
         const status = statusById.get(item.id);
-        return status === undefined || status === "PROCESSING";
+        return status === undefined || isUploadInFlight(status);
       });
       return next.length === current.length ? current : next;
     });
@@ -432,33 +421,50 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
         (entry): entry is { trackedItem: typeof pendingCreatedItems[number]; item: ClothingItem } =>
           entry !== null && entry.item.status === "READY",
       );
+      const duplicateRejectedItems = results.filter(
+        (entry): entry is { trackedItem: typeof pendingCreatedItems[number]; item: ClothingItem } =>
+          entry !== null && entry.item.status === "DUPLICATE_REJECTED",
+      );
+      const failedItems = results.filter(
+        (entry): entry is { trackedItem: typeof pendingCreatedItems[number]; item: ClothingItem } =>
+          entry !== null && entry.item.status === "FAILED",
+      );
       const terminalItems = results.filter(
         (entry): entry is { trackedItem: typeof pendingCreatedItems[number]; item: ClothingItem } =>
-          entry !== null && entry.item.status !== "PROCESSING",
+          entry !== null && !isUploadInFlight(entry.item.status),
       );
 
-      terminalItems.forEach((result) => {
-        const summary = toClothingItemSummary(result.item);
+      duplicateRejectedItems.forEach((result) => {
         client.setQueriesData<PageResponse<ClothingItemSummary>>(
           { queryKey: ["clothing"] },
-          (current) => {
-            if (!current?.content.some((item) => item.id === summary.id)) {
-              return current;
-            }
-            return upsertItemIntoPage(current, summary);
-          },
+          (current) => removeItemFromPage(current, result.item.id),
         );
-        const isActive =
-          result.trackedItem.page === page &&
-          result.trackedItem.query === query &&
-          result.trackedItem.category === category;
-        if (isActive && page === 0 && matchesWardrobeView(result.item, category, query)) {
-          client.setQueryData<PageResponse<ClothingItemSummary> | undefined>(
-            itemsQueryKey,
-            (current) => upsertItemIntoPage(current, summary),
-          );
-        }
       });
+
+      terminalItems
+        .filter((result) => result.item.status !== "DUPLICATE_REJECTED")
+        .forEach((result) => {
+          const summary = toClothingItemSummary(result.item);
+          client.setQueriesData<PageResponse<ClothingItemSummary>>(
+            { queryKey: ["clothing"] },
+            (current) => {
+              if (!current?.content.some((item) => item.id === summary.id)) {
+                return current;
+              }
+              return upsertItemIntoPage(current, summary);
+            },
+          );
+          const isActive =
+            result.trackedItem.page === page &&
+            result.trackedItem.query === query &&
+            result.trackedItem.category === category;
+          if (isActive && page === 0 && matchesWardrobeView(result.item, category, query)) {
+            client.setQueryData<PageResponse<ClothingItemSummary> | undefined>(
+              itemsQueryKey,
+              (current) => upsertItemIntoPage(current, summary),
+            );
+          }
+        });
 
       setPendingCreatedItems((current) => {
         const next = current.filter((trackedItem) => {
@@ -466,7 +472,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
             (entry) => entry?.trackedItem.id === trackedItem.id,
           );
           if (!result) return true;
-          return result.item.status === "PROCESSING";
+          return isUploadInFlight(result.item.status);
         });
         return next.length === current.length ? current : next;
       });
@@ -480,6 +486,22 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
         showToast({
           title: `New ${formatCategoryLabel(result.item.category)} has been added to your wardrobe.`,
           tone: "success",
+        });
+      });
+      duplicateRejectedItems.forEach((result) => {
+        if (notifiedProcessingIds.current.has(result.trackedItem.id)) return;
+        notifiedProcessingIds.current.add(result.trackedItem.id);
+        showToast({
+          title: "That item is already in your wardrobe.",
+          tone: "info",
+        });
+      });
+      failedItems.forEach((result) => {
+        if (notifiedProcessingIds.current.has(result.trackedItem.id)) return;
+        notifiedProcessingIds.current.add(result.trackedItem.id);
+        showToast({
+          title: "Upload failed. Try adding the item again.",
+          tone: "info",
         });
       });
     };
@@ -528,24 +550,6 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
     setError("");
     setDeleting(item);
   }
-  async function openDuplicateReview(item: ClothingItemSummary) {
-    if (!item.duplicateOfId) return;
-    setError("");
-    try {
-      const [fullItem, original] = await Promise.all([
-        api.clothing.get(item.id),
-        api.clothing.get(item.duplicateOfId),
-      ]);
-      setDuplicateReview({ item: fullItem, original });
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Could not load duplicate items.",
-      );
-    }
-  }
-
   return (
     <>
       <section className="mb-10 flex flex-col justify-between gap-6 md:flex-row md:items-end">
@@ -693,7 +697,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
             <Loading />
           ) : items.isError ? (
             <ErrorState message={items.error.message} />
-          ) : !visibleItems?.content.length ? (
+          ) : !renderedItems?.content.length ? (
             <EmptyState
               title="Nothing here—yet."
               copy={
@@ -714,7 +718,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
           ) : (
             <>
               <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 md:gap-6">
-                {visibleItems.content.map((item) => (
+                {renderedItems.content.map((item) => (
                   <article
                     key={item.id}
                     className="group overflow-hidden rounded-[0.5rem] border border-stone/50 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-card"
@@ -729,9 +733,11 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
                         />
                       ) : (
                         <div className="flex h-full items-center justify-center bg-linen text-center text-sm text-ink/50">
-                          {item.status === "PROCESSING"
-                            ? "Processing image…"
-                            : "Image unavailable"}
+                          {item.status === "WAITING_FOR_UPLOAD"
+                            ? "Uploading image…"
+                            : item.status === "PROCESSING"
+                              ? "Processing image…"
+                              : "Image unavailable"}
                         </div>
                       )}
                     </div>
@@ -739,64 +745,25 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
                       {item.status !== "READY" && (
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <span className="text-[10px] font-semibold text-ink/45">
-                            {item.status === "DUPLICATE_REVIEW"
-                              ? "Duplicate found"
-                              : item.processingError === "CATEGORY_REQUIRED"
-                                ? "Choose a category"
-                                : item.status}
+                            {clothingStatusLabel(item.status)}
                           </span>
                         </div>
                       )}
-                      {item.processingError === "CATEGORY_REQUIRED" && (
-                        <p className="mb-2 text-xs leading-5 text-red-700">
-                          Could not identify a category. Choose one manually.
-                        </p>
-                      )}
-                      {item.processingError === "ORIGINAL_UNAVAILABLE" && (
-                        <p className="mb-2 text-xs leading-5 text-red-700">
-                          Upload failed. Please choose the image and category
-                          again.
-                        </p>
-                      )}
                       {!readOnly && (
                         <div className="flex items-start justify-end gap-2">
-                          {item.status === "DUPLICATE_REVIEW" && (
-                            <button
-                              className="mr-auto rounded-full border border-stone px-3 py-1 text-xs font-semibold text-ink/60 hover:border-clay hover:text-clay"
-                              onClick={() => openDuplicateReview(item)}
-                            >
-                              Review
-                            </button>
-                          )}
                           <div className="flex">
                             <button
                               className="rounded-full p-1.5 hover:bg-linen"
                               onClick={() => openEdit(item)}
                               disabled={
-                                item.status === "PROCESSING" ||
-                                item.status === "RETRY" ||
-                                item.status === "DUPLICATE_REVIEW"
+                                isUploadInFlight(item.status) ||
+                                item.status === "DUPLICATE_REJECTED" ||
+                                item.status === "FAILED"
                               }
-                              aria-label={
-                                item.processingError === "ORIGINAL_UNAVAILABLE"
-                                  ? "Upload image again"
-                                  : item.processingError === "CATEGORY_REQUIRED"
-                                    ? "Choose category"
-                                    : "Edit item"
-                              }
+                              aria-label="Edit item"
                             >
                               <Edit3 size={15} />
                             </button>
-                            {item.status === "RETRY" && (
-                              <button
-                                className="rounded-full p-1.5 hover:bg-linen"
-                                onClick={() => retry.mutate(item.id)}
-                                disabled={retry.isPending}
-                                aria-label="Retry processing"
-                              >
-                                <RotateCcw size={15} />
-                              </button>
-                            )}
                             <button
                               className="rounded-full p-1.5 hover:bg-red-50 hover:text-red-800"
                               onClick={() => confirmDelete(item)}
@@ -848,88 +815,10 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
 
       {!readOnly && (
         <Modal
-          open={Boolean(duplicateReview)}
-          wide
-          title="Possible duplicate"
-          onClose={() =>
-            !keepDuplicate.isPending &&
-            !cancelDuplicate.isPending &&
-            setDuplicateReview(undefined)
-          }
-        >
-          {duplicateReview && (
-            <div>
-              <p className="mb-6 text-sm leading-6 text-ink/60">
-                These processed images match. Keep both if they represent
-                separate pieces, or cancel the new upload.
-              </p>
-              <div className="grid gap-5 sm:grid-cols-2">
-                {[
-                  {
-                    label: "Already in wardrobe",
-                    value: duplicateReview.original,
-                  },
-                  { label: "New upload", value: duplicateReview.item },
-                ].map(({ label, value }) => (
-                  <div key={value.id}>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-[.14em] text-ink/45">
-                      {label}
-                    </p>
-                    <div className="aspect-[4/5] overflow-hidden rounded-2xl border border-stone bg-white">
-                      <img
-                        className="h-full w-full object-contain p-3"
-                        src={value.imageUrl ?? ""}
-                        alt={`${label}: ${value.category?.toLowerCase() ?? "clothing"}`}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {error && (
-                <div className="mt-5">
-                  <ErrorState message={error} onClose={() => setError("")} />
-                </div>
-              )}
-              <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-                <Button
-                  variant="danger"
-                  disabled={
-                    keepDuplicate.isPending || cancelDuplicate.isPending
-                  }
-                  onClick={() =>
-                    cancelDuplicate.mutate(duplicateReview.item.id)
-                  }
-                >
-                  {cancelDuplicate.isPending
-                    ? "Cancelling…"
-                    : "Cancel new upload"}
-                </Button>
-                <Button
-                  disabled={
-                    keepDuplicate.isPending || cancelDuplicate.isPending
-                  }
-                  onClick={() => keepDuplicate.mutate(duplicateReview.item.id)}
-                >
-                  {keepDuplicate.isPending ? "Saving…" : "Keep both"}
-                </Button>
-              </div>
-            </div>
-          )}
-        </Modal>
-      )}
-
-      {!readOnly && (
-        <Modal
           open={formOpen}
           wide={Boolean(editing)}
           title={
-            editing?.processingError === "ORIGINAL_UNAVAILABLE"
-              ? "Upload this piece again"
-              : editing?.processingError === "CATEGORY_REQUIRED"
-                ? "Choose a category"
-                : editing
-                  ? "Edit this piece"
-                  : "Add a new piece"
+            editing ? "Edit this piece" : "Add a new piece"
           }
           onClose={() => setFormOpen(false)}
         >
@@ -938,7 +827,7 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
               <ErrorState message={error} onClose={() => setError("")} />
             </div>
           )}
-          {editing && editing.processingError !== "ORIGINAL_UNAVAILABLE" ? (
+          {editing ? (
             <div className="grid gap-7 md:grid-cols-[minmax(0,.85fr)_minmax(0,1.15fr)]">
               <div>
                 <div className="aspect-[4/5] overflow-hidden rounded-2xl border border-stone/50 bg-white">
@@ -966,22 +855,6 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
                 />
               </div>
             </div>
-          ) : editing ? (
-            <ClothingForm
-              item={editing}
-              busy={replaceMissingUpload.isPending}
-              onSubmit={(values) => {
-                if (!values.category) {
-                  setError("Choose a category.");
-                  return;
-                }
-                replaceMissingUpload.mutate({
-                  category: values.category,
-                  tags: values.tags ?? [],
-                  image: values.image,
-                });
-              }}
-            />
           ) : (
             <ClothingForm
               busy={create.isPending}

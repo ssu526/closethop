@@ -1,0 +1,98 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/closethop
+    username: closethop
+    password: closethop
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        default_batch_fetch_size: 50
+    show-sql: false
+    open-in-view: false
+
+  flyway:
+    enabled: false
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+
+app:
+  removed-clothing-cleanup-enabled: ${REMOVED_CLOTHING_CLEANUP_ENABLED:false}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
+  rate-limit:
+    ai-per-minute: ${AI_RATE_LIMIT_PER_MINUTE:20}
+    uploads-per-hour: ${UPLOAD_RATE_LIMIT_PER_HOUR:60}
+    upload-ip-per-hour: ${UPLOAD_IP_RATE_LIMIT_PER_HOUR:200}
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+aws:
+  s3:
+    bucket-name: ${AWS_S3_BUCKET:closethop-images}
+    region: ${AWS_REGION:us-east-1}
+    access-key: ${AWS_ACCESS_KEY:dummy}
+    secret-key: ${AWS_SECRET_KEY:dummy}
+    endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+    signed-url-minutes: ${IMAGE_SIGNED_URL_MINUTES:15}
+
+logging:
+  level:
+    com.wardrobe: ${LOG_LEVEL:INFO}
+    org.springframework: INFO
+
+processing:
+  deadline-seconds: ${PROCESSING_DEADLINE_SECONDS:15}
+  recovery-interval-ms: ${PROCESSING_RECOVERY_INTERVAL_MS:2000}
+  original-cleanup-interval-ms: ${PROCESSING_ORIGINAL_CLEANUP_INTERVAL_MS:60000}
+
+ai:
+  outfit:
+    provider: ${OUTFIT_AI_PROVIDER:fake}
+    model: ${OUTFIT_AI_MODEL:gemini-2.5-flash-lite}
+    api-key: ${GEMINI_API_KEY:}
+    prompt-path: ${OUTFIT_SUGGESTION_PROMPT_PATH:classpath:prompts/outfit_suggestion_prompt.txt}
+
+    max-candidates: ${OUTFIT_AI_MAX_CANDIDATES:100}
+    max-prompt-bytes: ${OUTFIT_AI_MAX_PROMPT_BYTES:65536}
+    max-suggestions: ${OUTFIT_AI_MAX_SUGGESTIONS:3}
+
+    bulkhead:
+      max-concurrent-requests: ${OUTFIT_AI_MAX_CONCURRENT:4}
+      acquire-timeout-ms: ${OUTFIT_AI_ACQUIRE_TIMEOUT_MS:250}
+
+    retry:
+      max-attempts: ${OUTFIT_AI_RETRY_MAX_ATTEMPTS:2}
+      backoff-min-ms: ${OUTFIT_AI_RETRY_BACKOFF_MIN_MS:200}
+      backoff-jitter-ms: ${OUTFIT_AI_RETRY_BACKOFF_JITTER_MS:200}
+
+    circuit-breaker:
+      failure-threshold: ${OUTFIT_AI_CB_FAILURE_THRESHOLD:5}
+      open-duration-ms: ${OUTFIT_AI_CB_OPEN_DURATION_MS:30000}

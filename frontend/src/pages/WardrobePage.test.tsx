@@ -177,10 +177,7 @@ describe("WardrobePage", () => {
     vi.spyOn(api.users, "setVisibility").mockResolvedValue(makeProfile());
     vi.spyOn(api.clothing, "get").mockResolvedValue(makeItem());
     vi.spyOn(api.clothing, "update").mockResolvedValue(makeItem());
-    vi.spyOn(api.clothing, "replaceMissingUpload").mockResolvedValue(makeItem());
-    vi.spyOn(api.clothing, "retry").mockResolvedValue(makeItem());
     vi.spyOn(api.clothing, "delete").mockResolvedValue(undefined);
-    vi.spyOn(api.clothing, "keepDuplicate").mockResolvedValue(makeItem());
     URL.createObjectURL = vi.fn(() => "blob:preview");
     URL.revokeObjectURL = vi.fn();
   });
@@ -189,6 +186,23 @@ describe("WardrobePage", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("shows a user-friendly label for waiting upload status", async () => {
+    vi.spyOn(api.clothing, "list").mockResolvedValue(
+      makePage([
+        makeSummary({
+          id: "waiting-item",
+          status: "WAITING_FOR_UPLOAD",
+          imageUrl: "https://example.com/waiting-item.png",
+        }),
+      ]),
+    );
+
+    renderWardrobePage();
+
+    expect(await screen.findByText("Processing")).toBeInTheDocument();
+    expect(screen.queryByText("WAITING_FOR_UPLOAD")).not.toBeInTheDocument();
   });
 
   it("inserts a new processing card immediately after upload", async () => {
@@ -228,6 +242,72 @@ describe("WardrobePage", () => {
     await submitNewItem(user);
 
     expect(await screen.findByText("Processing image…")).toBeInTheDocument();
+  });
+
+  it("shows the uploaded original image while processing", async () => {
+    vi.mocked(api.users.me)
+      .mockResolvedValueOnce(
+        makeProfile({ clothingItemCount: 1, categoryCounts: { TOPS: 1 } }),
+      )
+      .mockResolvedValue(
+        makeProfile({ clothingItemCount: 2, categoryCounts: { TOPS: 2 } }),
+      );
+    vi.spyOn(api.clothing, "list").mockResolvedValue(makePage([]));
+    vi.spyOn(api.clothing, "create").mockResolvedValue(
+      makeItem({
+        id: "created-item",
+        category: "TOPS",
+        imageUrl: "https://example.com/original-item.jpg",
+        status: "PROCESSING",
+      }),
+    );
+    vi.mocked(api.clothing.get).mockResolvedValue(
+      makeItem({
+        id: "created-item",
+        category: "TOPS",
+        imageUrl: "https://example.com/original-item.jpg",
+        status: "PROCESSING",
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWardrobePage();
+
+    expect(await screen.findByText("Nothing here—yet.")).toBeInTheDocument();
+    await openCreateModal(user);
+    await submitNewItem(user);
+
+    const image = await screen.findByAltText("tops wardrobe item");
+    expect(image).toHaveAttribute("src", "https://example.com/original-item.jpg");
+    expect(screen.getByText("Processing")).toBeInTheDocument();
+    expect(screen.queryByText("Processing image…")).not.toBeInTheDocument();
+  });
+
+  it("does not render duplicate rejected items returned by the wardrobe list", async () => {
+    vi.spyOn(api.clothing, "list").mockResolvedValue(
+      makePage([
+        makeSummary({
+          id: "canonical-item",
+          imageUrl: "https://example.com/canonical-item.png",
+        }),
+        makeSummary({
+          id: "duplicate-item",
+          status: "DUPLICATE_REJECTED",
+          imageUrl: null,
+          processingError: "DUPLICATE_UPLOAD",
+          duplicateOfId: "canonical-item",
+        }),
+      ]),
+    );
+
+    renderWardrobePage();
+
+    expect(await screen.findByAltText("tops wardrobe item")).toHaveAttribute(
+      "src",
+      "https://example.com/canonical-item.png",
+    );
+    expect(screen.queryByText("Duplicate rejected")).not.toBeInTheDocument();
+    expect(screen.queryByText("Image unavailable")).not.toBeInTheDocument();
   });
 
   it("does not show a new processing card in the wrong category", async () => {
@@ -327,6 +407,51 @@ describe("WardrobePage", () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
     expect(screen.getByText("New Tops has been added to your wardrobe.")).toBeInTheDocument();
+  });
+
+  it("removes a duplicate rejected pending upload after notifying the user", async () => {
+    vi.spyOn(api.clothing, "list").mockResolvedValue(
+      makePage([
+        makeSummary({
+          id: "canonical-item",
+          imageUrl: "https://example.com/canonical-item.png",
+        }),
+      ]),
+    );
+    vi.spyOn(api.clothing, "create").mockResolvedValue(
+      makeItem({
+        id: "duplicate-item",
+        category: "TOPS",
+        imageUrl: null,
+        status: "PROCESSING",
+      }),
+    );
+    vi.mocked(api.clothing.get).mockResolvedValue(
+      makeItem({
+        id: "duplicate-item",
+        category: "TOPS",
+        imageUrl: null,
+        status: "DUPLICATE_REJECTED",
+        processingError: "DUPLICATE_UPLOAD",
+        duplicateOfId: "canonical-item",
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWardrobePage();
+
+    await openCreateModal(user);
+    await submitNewItem(user);
+
+    expect(await screen.findByText("That item is already in your wardrobe.")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText("Processing image…")).not.toBeInTheDocument();
+      expect(screen.queryByText("Image unavailable")).not.toBeInTheDocument();
+    });
+    expect(screen.getByAltText("tops wardrobe item")).toHaveAttribute(
+      "src",
+      "https://example.com/canonical-item.png",
+    );
   });
 
   it("keeps polling after a stale refetch misses the new item and reconciles without duplicating the card", async () => {

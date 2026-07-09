@@ -127,11 +127,34 @@ export const api = {
       );
     },
     get: (id: string) => request<ClothingItem>(`/api/clothing/${id}`),
-    create: (values: { category: string; image: File }) => {
-      const body = new FormData();
-      body.append("item", new Blob([JSON.stringify({ category: values.category })], { type: "application/json" }));
-      body.append("image", values.image);
-      return request<ClothingItem>("/api/clothing", { method: "POST", body });
+    create: async (values: { category: string; image: File }) => {
+      const upload = await request<{
+        itemId: string;
+        uploadUrl: string;
+        originalS3Key: string;
+        expiresAt: string;
+        item: ClothingItem;
+      }>("/api/clothing/upload-url", {
+        method: "POST",
+        body: JSON.stringify({
+          category: values.category,
+          contentType: values.image.type || "image/jpeg"
+        })
+      });
+      const response = await fetch(upload.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": values.image.type || "image/jpeg" },
+        body: values.image
+      });
+      if (!response.ok) {
+        try {
+          await request<ClothingItem>(`/api/clothing/${upload.itemId}/upload-failed`, { method: "POST" });
+        } catch {
+          // Cleanup job will reconcile abandoned uploads if reporting failure fails.
+        }
+        throw new ApiError("Upload failed. Try again.", response.status);
+      }
+      return request<ClothingItem>(`/api/clothing/${upload.itemId}`);
     },
     update: (id: string, values: {
       category: string;
@@ -147,19 +170,7 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(values)
       }),
-    replaceMissingUpload: (id: string, category: string, tags: string[], image: File) => {
-      const body = new FormData();
-      body.append("item", new Blob([JSON.stringify({ category, tags })], { type: "application/json" }));
-      body.append("image", image);
-      return request<ClothingItem>(`/api/clothing/${id}/replacement`, {
-        method: "POST",
-        body
-      });
-    },
-    delete: (id: string) => request<void>(`/api/clothing/${id}`, { method: "DELETE" }),
-    keepDuplicate: (id: string) =>
-      request<ClothingItem>(`/api/clothing/${id}/duplicate/keep`, { method: "POST" }),
-    retry: (id: string) => request<ClothingItem>(`/api/clothing/${id}/retry`, { method: "POST" })
+    delete: (id: string) => request<void>(`/api/clothing/${id}`, { method: "DELETE" })
   },
   outfits: {
     list: (filters: {

@@ -1,5 +1,6 @@
 import io
 import logging
+import pytest
 from PIL import Image
 
 
@@ -165,8 +166,7 @@ def test_process_reuses_postgres_metadata_without_calling_gemini(monkeypatch):
     result = app.process({
         "itemId": "item-1",
         "userId": "user-1",
-        "version": 1,
-        "sourceKey": "staging/user-1/item-1/1/source",
+        "sourceKey": "users/user-1/original/item-1.png",
     })
 
     assert fake_s3.put_calls
@@ -218,13 +218,128 @@ def test_process_calls_gemini_when_no_postgres_match(monkeypatch):
     result = app.process({
         "itemId": "item-2",
         "userId": "user-2",
-        "version": 1,
-        "sourceKey": "staging/user-2/item-2/1/source",
+        "sourceKey": "users/user-2/original/item-2.png",
     })
 
     assert fake_provider.calls == 1
     assert fake_s3.put_calls
     assert result["metadata"]["tags"] == ["navy"]
+
+
+def test_finalize_deletes_processed_object_when_db_update_fails(monkeypatch):
+    import app
+
+    deleted = []
+
+    class FakeS3:
+        def delete_object(self, **kwargs):
+            deleted.append(kwargs["Key"])
+
+    monkeypatch.setattr(app, "s3", FakeS3())
+    monkeypatch.setattr(
+        app,
+        "process",
+        lambda _job: {
+            "objectKey": "users/user-1/processed/item-1.webp",
+            "imageHash": "processed-hash",
+            "metadata": {"tags": ["blue"]},
+        },
+    )
+    monkeypatch.setattr(
+        app,
+        "ready_with_processed",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("DB_UPDATE_FAILED")),
+    )
+
+    with pytest.raises(RuntimeError, match="DB_UPDATE_FAILED"):
+        app.finalize_claimed_job({
+            "itemId": "item-1",
+            "userId": "user-1",
+            "sourceKey": "users/user-1/original/item-1.jpg",
+        })
+
+    assert deleted == ["users/user-1/processed/item-1.webp"]
+
+
+def test_parse_original_s3_key_for_direct_upload():
+    import app
+    job = app.parse_original_key("users/user-1/original/item-1.jpg")
+    assert job == {
+        "userId": "user-1",
+        "itemId": "item-1",
+        "sourceKey": "users/user-1/original/item-1.jpg",
+    }
+    assert app.parse_original_key("users/user-1/processed/item-1.webp") is None
+
+
+def test_s3_event_parser_ignores_processed_keys():
+    import app
+    jobs = app.jobs_from_s3_event("""{
+      "Records": [
+        {"s3": {"object": {"key": "users/user-1/original/item-1.jpg"}}},
+        {"s3": {"object": {"key": "users/user-1/processed/item-1.webp"}}}
+      ]
+    }""")
+    assert [job["itemId"] for job in jobs] == ["item-1"]
+
+
+def test_duplicate_sqs_message_skips_processing(monkeypatch):
+    import app
+    processed = []
+    monkeypatch.setattr(app, "claim_job", lambda _job: None)
+    monkeypatch.setattr(app, "finalize_claimed_job", lambda job: processed.append(job))
+    app.handle_sqs_message({
+        "Body": """{"Records":[{"s3":{"object":{"key":"users/user-1/original/item-1.jpg"}}}]}"""
+    })
+    assert processed == []
+
+
+def test_recovers_waiting_uploads_when_original_object_exists(monkeypatch):
+    import app
+
+    class FakeCursor:
+        def __init__(self):
+            self.executed = None
+
+        def execute(self, query, params):
+            self.executed = (query, params)
+
+        def fetchall(self):
+            return [
+                ("item-1", "users/user-1/original/item-1.jpg"),
+                ("item-2", "users/user-1/original/item-2.jpg"),
+            ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeS3:
+        def head_object(self, **kwargs):
+            if kwargs["Key"].endswith("item-2.jpg"):
+                raise RuntimeError("not found")
+            return {}
+
+    finalized = []
+    monkeypatch.setattr(app, "postgres_connection", lambda: FakeConnection())
+    monkeypatch.setattr(app, "s3", FakeS3())
+    monkeypatch.setattr(app, "claim_job", lambda job: {"itemId": job["itemId"]})
+    monkeypatch.setattr(app, "finalize_claimed_job", lambda job: finalized.append(job))
+
+    assert app.recover_waiting_uploads() == 1
+    assert finalized == [{"itemId": "item-1"}]
 
 
 def test_gemini_key_falls_back_to_secrets_manager(monkeypatch):
@@ -250,44 +365,11 @@ def test_metrics_log_when_cloudwatch_is_disabled(monkeypatch, caplog):
     assert '"name": "CacheHit"' in caplog.text
 
 
-def test_http_process_returns_ready_payload(monkeypatch):
+def test_http_health_returns_ok():
     import app
 
-    monkeypatch.setattr(app, "process", lambda job: {
-        "itemId": job["itemId"],
-        "version": job["version"],
-        "status": "READY",
-        "objectKey": "users/output.webp",
-        "imageHash": "hash",
-        "metadata": {"tags": ["blue"]},
-    })
-
     client = app.http_app.test_client()
-    response = client.post("/process", json={
-        "userId": "user-1",
-        "itemId": "item-1",
-        "version": 1,
-        "sourceKey": "staging/user-1/item-1/1/source",
-    })
+    response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.get_json()["status"] == "READY"
-
-
-def test_http_process_returns_failed_payload_for_value_error(monkeypatch):
-    import app
-
-    monkeypatch.setattr(app, "process", lambda _job: (_ for _ in ()).throw(ValueError("BACKGROUND_REMOVAL_EMPTY")))
-
-    client = app.http_app.test_client()
-    response = client.post("/process", json={
-        "userId": "user-1",
-        "itemId": "item-1",
-        "version": 1,
-        "sourceKey": "staging/user-1/item-1/1/source",
-    })
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["status"] == "FAILED"
-    assert payload["errorCode"] == "BACKGROUND_REMOVAL_EMPTY"
+    assert response.get_json()["status"] == "ok"
