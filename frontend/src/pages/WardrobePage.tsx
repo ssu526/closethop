@@ -780,8 +780,8 @@ export function WardrobePage({ viewUserId }: { viewUserId?: string }) {
                 ))}
               </div>
               <Pagination
-                page={visibleItems.page.number}
-                totalPages={visibleItems.page.totalPages}
+                page={renderedItems.page.number}
+                totalPages={renderedItems.page.totalPages}
                 onChange={setPage}
               />
             </>
