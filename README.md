@@ -3,6 +3,8 @@
 ClosetHop is a wardrobe management app with a React frontend, a Spring Boot API,
 and a Python image-processing worker.
 
+<img width="924" height="713" alt="Screenshot 2026-07-09 at 3 32 57 PM" src="https://github.com/user-attachments/assets/952b5117-8d49-4278-a502-770aa6ce1cc4" />
+
 ## Architecture
 
 Production splits responsibilities between a Vercel-hosted frontend, an EC2
