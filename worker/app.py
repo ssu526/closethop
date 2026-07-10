@@ -35,7 +35,7 @@ class ClothingMetadata(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=20)
 
 
-S3_BUCKET = os.environ["IMAGE_BUCKET"]
+S3_BUCKET = os.getenv("IMAGE_BUCKET") or os.getenv("AWS_S3_BUCKET")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 PROCESSING_QUEUE_URL = os.getenv("PROCESSING_QUEUE_URL")
 MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash-lite")
@@ -395,6 +395,8 @@ def claim_job(job: dict) -> dict | None:
 
 
 def recover_waiting_uploads(limit: int = 10) -> int:
+    if not S3_BUCKET:
+        raise ValueError("IMAGE_BUCKET_REQUIRED")
     query = """
         SELECT id, original_s3_key
         FROM clothing_items
@@ -593,6 +595,8 @@ def build_public_url(output_key: str) -> str:
 
 
 def process(job: dict) -> dict:
+    if not S3_BUCKET:
+        raise ValueError("IMAGE_BUCKET_REQUIRED")
     started = time.monotonic()
     item_id = job["itemId"]
     user_id = job["userId"]
@@ -708,6 +712,8 @@ def handle_sqs_message(message: dict):
 
 
 def run_worker():
+    if not S3_BUCKET:
+        raise ValueError("IMAGE_BUCKET_REQUIRED")
     if not PROCESSING_QUEUE_URL:
         raise ValueError("PROCESSING_QUEUE_URL_REQUIRED")
     while True:

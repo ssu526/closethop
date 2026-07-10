@@ -20,7 +20,11 @@ class PostgresMigrationIntegrationTests {
                 .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
                 .load();
 
-        assertEquals(3, flyway.migrate().migrationsExecuted);
+        int expectedMigrations = flyway.info()
+                .all()
+                .length;
+
+        assertEquals(expectedMigrations, flyway.migrate().migrationsExecuted);
         flyway.validate();
         assertEquals(0, flyway.migrate().migrationsExecuted);
     }
