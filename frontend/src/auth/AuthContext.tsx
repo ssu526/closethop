@@ -55,19 +55,29 @@ function normalizeCognitoDomain(domain: string) {
 }
 
 function isErrorNamed(reason: unknown, name: string) {
-  return reason instanceof Error && reason.name === name;
+  return (
+    (reason instanceof Error && reason.name === name) ||
+    (typeof reason === "object" &&
+      reason !== null &&
+      "__type" in reason &&
+      (reason as { __type?: unknown }).__type === name)
+  );
+}
+
+function stringClaim(value: unknown) {
+  return typeof value === "string" ? value : undefined;
 }
 
 function cognitoProfileName(
-  attributes: Awaited<ReturnType<typeof fetchUserAttributes>>,
+  attributes: Record<string, unknown>,
   fallback: string
 ) {
   const fullName = firstPresent(
-    attributes.name,
-    [attributes.given_name, attributes.family_name].filter(Boolean).join(" ")
+    stringClaim(attributes.name),
+    [stringClaim(attributes.given_name), stringClaim(attributes.family_name)].filter(Boolean).join(" ")
   );
-  const emailName = attributes.email?.split("@")[0];
-  return firstPresent(fullName, attributes.preferred_username, emailName, fallback) ?? fallback;
+  const emailName = stringClaim(attributes.email)?.split("@")[0];
+  return firstPresent(fullName, stringClaim(attributes.preferred_username), emailName, fallback) ?? fallback;
 }
 
 function configureCognito() {
@@ -85,7 +95,7 @@ function configureCognito() {
         loginWith: {
           oauth: {
             domain: normalizeCognitoDomain(domain),
-            scopes: ["openid", "email", "profile"],
+            scopes: ["openid", "email", "profile", "aws.cognito.signin.user.admin"],
             redirectSignIn: [
               import.meta.env.VITE_COGNITO_REDIRECT_SIGN_IN ?? "http://localhost:3000/auth/callback"
             ],
@@ -125,22 +135,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }, []);
 
+  const clearCognitoSession = useCallback(async () => {
+    try {
+      await signOut();
+    } catch {
+      // If Cognito's cached session is already invalid, still clear app state.
+    }
+    clearSession();
+    setOtpPending(false);
+  }, [clearSession]);
+
+  const getCognitoProfileAttributes = useCallback(async () => {
+    const session = await fetchAuthSession();
+    const idTokenPayload = session.tokens?.idToken?.payload ?? {};
+    const tokenAttributes = {
+      name: idTokenPayload.name,
+      given_name: idTokenPayload.given_name,
+      family_name: idTokenPayload.family_name,
+      preferred_username: idTokenPayload.preferred_username,
+      email: idTokenPayload.email
+    };
+    if (cognitoProfileName(tokenAttributes, "")) return tokenAttributes;
+    return fetchUserAttributes();
+  }, []);
+
   const refresh = useCallback(async () => {
     if (mode === "local") {
       const stored = sessionStorage.getItem(LOCAL_SESSION_KEY);
       setUser(stored ? (JSON.parse(stored) as UserSession) : null);
       return;
     }
+    let foundCognitoUser = false;
     try {
       const current = await getCurrentUser();
-      const attributes = await fetchUserAttributes();
+      foundCognitoUser = true;
+      const attributes = await getCognitoProfileAttributes();
       const profileName = cognitoProfileName(attributes, current.username);
       const profile = await api.users.updateProfileName(profileName);
       setUser({ id: current.userId, username: profile.username });
-    } catch {
+    } catch (reason) {
+      if (foundCognitoUser) await clearCognitoSession();
       setUser(null);
     }
-  }, [mode]);
+  }, [clearCognitoSession, getCognitoProfileAttributes, mode]);
 
   const beginExistingUserEmailOtp = useCallback(async (email: string) => {
     const result = await signIn({
@@ -212,26 +249,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const normalizedEmail = email.trim();
     setOtpEmail(normalizedEmail);
     const startEmailOtp = async () => {
-      await beginNewUserEmailOtp(normalizedEmail);
+      try {
+        await beginNewUserEmailOtp(normalizedEmail);
+      } catch (reason) {
+        if (!isErrorNamed(reason, USERNAME_EXISTS_ERROR)) throw reason;
+        await beginExistingUserEmailOtp(normalizedEmail);
+      }
     };
 
     try {
       await startEmailOtp();
     } catch (reason) {
-      if (isErrorNamed(reason, USERNAME_EXISTS_ERROR)) {
-        await beginExistingUserEmailOtp(normalizedEmail);
-        return;
-      }
       if (!isAlreadySignedInUserError(reason)) throw reason;
-      await signOut();
-      clearSession();
-      setOtpPending(false);
-      try {
-        await startEmailOtp();
-      } catch (retryReason) {
-        if (!isErrorNamed(retryReason, USERNAME_EXISTS_ERROR)) throw retryReason;
-        await beginExistingUserEmailOtp(normalizedEmail);
-      }
+      await clearCognitoSession();
+      await startEmailOtp();
     }
   };
 
@@ -268,7 +299,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await signInWithRedirect({ provider: "Google" });
         } catch (reason) {
           if (!isAlreadySignedInUserError(reason)) throw reason;
-          await refresh();
+          await clearCognitoSession();
+          await signInWithRedirect({ provider: "Google" });
         }
       },
       logout: async () => {

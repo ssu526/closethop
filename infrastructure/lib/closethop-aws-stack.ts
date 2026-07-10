@@ -123,7 +123,8 @@ export class ClosetHopAwsStack extends Stack {
         scopes: [
           cognito.OAuthScope.OPENID,
           cognito.OAuthScope.EMAIL,
-          cognito.OAuthScope.PROFILE
+          cognito.OAuthScope.PROFILE,
+          cognito.OAuthScope.COGNITO_ADMIN
         ],
         callbackUrls: [props.callbackUrl],
         logoutUrls: [props.logoutUrl]

@@ -77,7 +77,7 @@ describe("ClosetHop Render AWS infrastructure", () => {
     stack.resourceCountIs("AWS::Cognito::UserPoolIdentityProvider", 1);
     stack.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       AllowedOAuthFlows: ["code"],
-      AllowedOAuthScopes: Match.arrayWith(["openid", "email", "profile"]),
+      AllowedOAuthScopes: Match.arrayWith(["openid", "email", "profile", "aws.cognito.signin.user.admin"]),
       CallbackURLs: ["http://localhost:3000/auth/callback"],
       ExplicitAuthFlows: Match.arrayWith(["ALLOW_USER_AUTH"])
     });
