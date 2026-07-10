@@ -42,7 +42,7 @@ public class ClothingItem {
     private String processedS3Key;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "processing_status", nullable = false, columnDefinition = "varchar(32) default 'WAITING_FOR_UPLOAD'")
+    @Column(name = "processing_status", nullable = false)
     @Builder.Default
     private Enums.ProcessingStatus status = Enums.ProcessingStatus.WAITING_FOR_UPLOAD;
 
