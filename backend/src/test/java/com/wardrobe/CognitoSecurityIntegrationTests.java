@@ -24,6 +24,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
@@ -89,6 +91,24 @@ class CognitoSecurityIntegrationTests {
         authenticatedRequest("expired-token", 401);
         authenticatedRequest("wrong-audience-token", 401);
         assertEquals(0, userRepository.count());
+    }
+
+    @Test
+    void allowsPreflightForConfiguredOrigin() throws Exception {
+        mockMvc.perform(options("/api/users/me")
+                        .header("Origin", "https://wardrobe.example")
+                        .header("Access-Control-Request-Method", "GET"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "https://wardrobe.example"))
+                .andExpect(header().string("Vary", org.hamcrest.Matchers.containsString("Origin")));
+    }
+
+    @Test
+    void rejectsPreflightForUnconfiguredOrigin() throws Exception {
+        mockMvc.perform(options("/api/users/me")
+                        .header("Origin", "https://not-allowed.example")
+                        .header("Access-Control-Request-Method", "GET"))
+                .andExpect(status().isForbidden());
     }
 
     @Test
