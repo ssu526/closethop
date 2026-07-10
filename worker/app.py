@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import gc
 import threading
 import time
 from functools import lru_cache
@@ -96,16 +97,34 @@ def gemini_client():
 
 
 MAX_SIZE = 768
+MAX_SOURCE_EDGE = int(os.getenv("MAX_SOURCE_EDGE", "1600"))
+REMBG_SESSION_CACHE_MODE = os.getenv("REMBG_SESSION_CACHE_MODE", "none").lower()
 
 
 @lru_cache(maxsize=2)
-def rembg_session(model_name: str):
+def _cached_rembg_session(model_name: str):
     return new_session(model_name)
+
+
+def rembg_session(model_name: str):
+    if REMBG_SESSION_CACHE_MODE == "all":
+        return _cached_rembg_session(model_name)
+    if REMBG_SESSION_CACHE_MODE == "primary" and model_name == "isnet-general-use":
+        return _cached_rembg_session(model_name)
+    return new_session(model_name)
+
+
+def downscale_for_processing(image: Image.Image) -> Image.Image:
+    if max(image.size) <= MAX_SOURCE_EDGE:
+        return image
+    resized = image.copy()
+    resized.thumbnail((MAX_SOURCE_EDGE, MAX_SOURCE_EDGE), Image.Resampling.LANCZOS)
+    return resized
 
 
 def normalize_image(source: bytes) -> tuple[bytes, str]:
     with Image.open(io.BytesIO(source)) as opened:
-        original = ImageOps.exif_transpose(opened).convert("RGBA")
+        original = downscale_for_processing(ImageOps.exif_transpose(opened).convert("RGBA"))
 
     try:
         foreground = remove_background_with_rembg(original)
@@ -133,12 +152,17 @@ def normalize_image(source: bytes) -> tuple[bytes, str]:
 
 
 def remove_background_with_rembg(image: Image.Image) -> Image.Image:
-    result = remove(image, session=rembg_session("isnet-general-use")).convert("RGBA")
+    session = rembg_session("isnet-general-use")
+    result = remove(image, session=session).convert("RGBA")
+    del session
 
     if is_good_cutout(result):
         return result
 
-    fallback = remove(image, session=rembg_session("u2net")).convert("RGBA")
+    gc.collect()
+    fallback_session = rembg_session("u2net")
+    fallback = remove(image, session=fallback_session).convert("RGBA")
+    del fallback_session
 
     if is_good_cutout(fallback):
         return fallback

@@ -41,6 +41,51 @@ def test_normalized_image_is_bounded_and_hash_is_stable(monkeypatch):
     assert first_hash == second_hash
 
 
+def test_downscale_for_processing_caps_large_inputs(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import app
+
+    source = Image.new("RGBA", (4000, 3000), "red")
+    resized = app.downscale_for_processing(source)
+
+    assert max(resized.size) == app.MAX_SOURCE_EDGE
+    assert source.size == (4000, 3000)
+
+
+def test_rembg_session_defaults_to_uncached_fallback(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import app
+
+    sentinel_sessions = []
+
+    def fake_new_session(model_name):
+        session = object()
+        sentinel_sessions.append((model_name, session))
+        return session
+
+    monkeypatch.setattr(app, "new_session", fake_new_session)
+    monkeypatch.setattr(app, "REMBG_SESSION_CACHE_MODE", "none")
+    app._cached_rembg_session.cache_clear()
+
+    primary_first = app.rembg_session("isnet-general-use")
+    primary_second = app.rembg_session("isnet-general-use")
+    fallback_first = app.rembg_session("u2net")
+    fallback_second = app.rembg_session("u2net")
+
+    assert primary_first is not primary_second
+    assert fallback_first is not fallback_second
+    assert [model for model, _session in sentinel_sessions] == [
+        "isnet-general-use",
+        "isnet-general-use",
+        "u2net",
+        "u2net",
+    ]
+
+
 def test_postgres_lookup_reuses_existing_metadata(monkeypatch):
     import app
 
