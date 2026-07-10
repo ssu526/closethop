@@ -95,12 +95,48 @@ public class AwsSecurityConfig {
     JwtDecoder cognitoJwtDecoder(
             CognitoProperties properties,
             OAuth2TokenValidator<Jwt> cognitoAccessTokenValidator) {
-        NimbusJwtDecoder decoder = (NimbusJwtDecoder) JwtDecoders.fromIssuerLocation(
-                properties.getIssuer());
-        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
-                JwtValidators.createDefaultWithIssuer(properties.getIssuer()),
-                cognitoAccessTokenValidator
-        ));
-        return decoder;
+        return new LazyCognitoJwtDecoder(properties, cognitoAccessTokenValidator);
+    }
+
+    private static class LazyCognitoJwtDecoder implements JwtDecoder {
+        private final CognitoProperties properties;
+        private final OAuth2TokenValidator<Jwt> cognitoAccessTokenValidator;
+        private volatile JwtDecoder delegate;
+
+        private LazyCognitoJwtDecoder(
+                CognitoProperties properties,
+                OAuth2TokenValidator<Jwt> cognitoAccessTokenValidator) {
+            this.properties = properties;
+            this.cognitoAccessTokenValidator = cognitoAccessTokenValidator;
+        }
+
+        @Override
+        public Jwt decode(String token) {
+            return delegate().decode(token);
+        }
+
+        private JwtDecoder delegate() {
+            JwtDecoder current = delegate;
+            if (current == null) {
+                synchronized (this) {
+                    current = delegate;
+                    if (current == null) {
+                        current = createDecoder();
+                        delegate = current;
+                    }
+                }
+            }
+            return current;
+        }
+
+        private JwtDecoder createDecoder() {
+            NimbusJwtDecoder decoder = (NimbusJwtDecoder) JwtDecoders.fromIssuerLocation(
+                    properties.getIssuer());
+            decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+                    JwtValidators.createDefaultWithIssuer(properties.getIssuer()),
+                    cognitoAccessTokenValidator
+            ));
+            return decoder;
+        }
     }
 }
