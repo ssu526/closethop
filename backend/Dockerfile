@@ -20,5 +20,5 @@ COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 USER wardrobe
-EXPOSE 8080
+EXPOSE 10000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

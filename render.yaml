@@ -7,7 +7,7 @@ services:
     numInstances: 1
     dockerContext: .
     dockerfilePath: ./backend/Dockerfile
-    healthCheckPath: /actuator/health
+    healthCheckPath: /actuator/health/liveness
     envVars:
       - key: SPRING_PROFILES_ACTIVE
         value: prod
