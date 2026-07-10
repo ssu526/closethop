@@ -116,6 +116,10 @@ function cognitoProfileName(
   return firstPresent(fullName, stringClaim(attributes.preferred_username), emailName, fallback) ?? fallback;
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function configureCognito() {
   const userPoolId = import.meta.env.VITE_COGNITO_USER_POOL_ID;
   const userPoolClientId = import.meta.env.VITE_COGNITO_CLIENT_ID;
@@ -195,12 +199,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return fetchUserAttributes();
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (mode === "local") {
-      const stored = sessionStorage.getItem(LOCAL_SESSION_KEY);
-      setUser(stored ? (JSON.parse(stored) as UserSession) : null);
-      return;
-    }
+  const refreshCognitoUser = useCallback(async (
+    options: { clearInvalidSession?: boolean; throwOnFailure?: boolean } = {}
+  ) => {
+    const clearInvalidSession = options.clearInvalidSession ?? true;
+    const throwOnFailure = options.throwOnFailure ?? false;
     let foundCognitoUser = false;
     try {
       const current = await getCurrentUser();
@@ -210,10 +213,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const profile = await api.users.updateProfileName(profileName);
       setUser({ id: current.userId, username: profile.username });
     } catch (reason) {
-      if (foundCognitoUser) await clearCognitoSession();
+      if (foundCognitoUser && clearInvalidSession) await clearCognitoSession();
       setUser(null);
+      if (throwOnFailure) throw reason;
     }
-  }, [clearCognitoSession, getCognitoProfileAttributes, mode]);
+  }, [clearCognitoSession, getCognitoProfileAttributes]);
+
+  const refreshAfterCognitoSignIn = useCallback(async () => {
+    let lastReason: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await refreshCognitoUser({ clearInvalidSession: false, throwOnFailure: true });
+        return;
+      } catch (reason) {
+        lastReason = reason;
+        if (attempt < 2) await wait(250);
+      }
+    }
+    throw lastReason;
+  }, [refreshCognitoUser]);
+
+  const refresh = useCallback(async () => {
+    if (mode === "local") {
+      const stored = sessionStorage.getItem(LOCAL_SESSION_KEY);
+      setUser(stored ? (JSON.parse(stored) as UserSession) : null);
+      return;
+    }
+    await refreshCognitoUser();
+  }, [mode, refreshCognitoUser]);
 
   const beginExistingUserEmailOtp = useCallback(async (email: string) => {
     let result = await signIn({
@@ -224,8 +251,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       result = await confirmSignIn({ challengeResponse: EMAIL_OTP_CHALLENGE });
     }
     if (result.isSignedIn) {
+      await refreshAfterCognitoSignIn();
       setOtpPending(false);
-      await refresh();
       return;
     }
 
@@ -236,7 +263,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setOtpStep(needsSignUpConfirmation ? "signUp" : "signIn");
     setOtpPending(true);
-  }, [refresh]);
+  }, [refreshAfterCognitoSignIn]);
 
   const beginNewUserEmailOtp = useCallback(async (email: string) => {
     const result = await signUp({
@@ -248,14 +275,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (result.isSignUpComplete) {
+      await refreshAfterCognitoSignIn();
       setOtpPending(false);
-      await refresh();
       return;
     }
 
     setOtpStep("signUp");
     setOtpPending(true);
-  }, [refresh]);
+  }, [refreshAfterCognitoSignIn]);
 
   useEffect(() => {
     if (mode === "cognito") configureCognito();
@@ -315,15 +342,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await confirmSignUp({ username: otpEmail, confirmationCode: code });
       const result = await autoSignIn();
       if (result.isSignedIn) {
+        await refreshAfterCognitoSignIn();
         setOtpPending(false);
-        await refresh();
       }
       return;
     }
     const result = await confirmSignIn({ challengeResponse: code });
     if (result.isSignedIn) {
+      await refreshAfterCognitoSignIn();
       setOtpPending(false);
-      await refresh();
     }
   };
 

@@ -42,6 +42,9 @@ function AuthHarness() {
       <button type="button" onClick={() => void auth.requestEmailOtp("sue@example.com")}>
         Email me a code
       </button>
+      <button type="button" onClick={() => void auth.confirmEmailOtp("123456").catch(() => undefined)}>
+        Confirm code
+      </button>
     </div>
   );
 }
@@ -408,5 +411,63 @@ describe("AuthProvider Cognito auth", () => {
       expect(screen.getByText("otp-pending")).toBeInTheDocument();
     });
     expect(authMocks.confirmSignIn).toHaveBeenCalledWith({ challengeResponse: "EMAIL_OTP" });
+  });
+
+  it("refreshes the app user after confirming an existing-user email OTP", async () => {
+    const user = userEvent.setup();
+
+    authMocks.confirmSignIn.mockResolvedValueOnce({ isSignedIn: true });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    authMocks.getCurrentUser.mockResolvedValueOnce({ userId: "cognito-user-1", username: "sue@example.com" });
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: /confirm code/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("sue")).toBeInTheDocument();
+    });
+    expect(screen.getByText("otp-idle")).toBeInTheDocument();
+  });
+
+  it("keeps OTP pending when app-user refresh fails after code confirmation", async () => {
+    const user = userEvent.setup();
+    const profileError = new Error("Profile refresh failed");
+
+    authMocks.confirmSignIn.mockResolvedValueOnce({ isSignedIn: true });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    authMocks.getCurrentUser.mockResolvedValue({ userId: "cognito-user-1", username: "sue@example.com" });
+    vi.mocked(api.users.updateProfileName).mockRejectedValue(profileError);
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: /confirm code/i }));
+
+    await waitFor(() => {
+      expect(api.users.updateProfileName).toHaveBeenCalledTimes(3);
+    });
+    expect(screen.getByText("anonymous")).toBeInTheDocument();
+    expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    expect(authMocks.signOut).not.toHaveBeenCalled();
   });
 });
