@@ -8,7 +8,6 @@ import com.wardrobe.exception.ForbiddenException;
 import com.wardrobe.exception.ResourceNotFoundException;
 import com.wardrobe.repository.ClothingItemRepository;
 import com.wardrobe.service.aws.S3Service;
-import com.wardrobe.service.aws.ImageAccessService;
 import com.wardrobe.config.S3Properties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,8 +28,8 @@ public class ClothingService {
 
     private final ClothingItemRepository clothingRepository;
     private final S3Service s3Service;
-    private final ImageAccessService imageAccess;
     private final S3Properties s3Properties;
+    private final ClothingItemViewMapper clothingItemViewMapper;
 
     @Transactional
     public ClothingItemDTO.UploadUrlResponse createUploadUrl(
@@ -42,10 +41,8 @@ public class ClothingService {
         ClothingItem item = ClothingItem.builder()
                 .category(category)
                 .status(Enums.ProcessingStatus.WAITING_FOR_UPLOAD)
-                .processingAttempt(1)
                 .processingError(null)
                 .uploadUrlExpiresAt(LocalDateTime.now().plusMinutes(s3Properties.getSignedUrlMinutes()))
-                .tags(normalizeTags(request.getTags()))
                 .user(user)
                 .build();
         item = clothingRepository.saveAndFlush(item);
@@ -56,14 +53,45 @@ public class ClothingService {
         return ClothingItemDTO.UploadUrlResponse.builder()
                 .itemId(item.getId())
                 .uploadUrl(s3Service.presignedPutUrl(originalKey, contentType))
-                .originalS3Key(originalKey)
                 .expiresAt(item.getUploadUrlExpiresAt())
-                .item(mapToResponse(item))
                 .build();
     }
 
     @Transactional
-    public ClothingItemDTO.Response markUploadFailed(UUID itemId, User user) {
+    public ClothingItemDTO.UploadUrlResponse retryUploadUrl(
+            UUID itemId,
+            ClothingItemDTO.RetryUploadUrlRequest request,
+            User user) {
+        ClothingItem item = findItemAndValidateOwnership(itemId, user);
+        if (!isRetryableUploadFailure(item)) {
+            throw new ValidationException("This upload cannot be retried");
+        }
+
+        String contentType = normalizeUploadContentType(request.getContentType());
+        String originalKey = originalUploadKey(user.getId(), item.getId(), contentType);
+        item.setStatus(Enums.ProcessingStatus.WAITING_FOR_UPLOAD);
+        item.setProcessingError(null);
+        item.setProcessingDeadlineAt(null);
+        item.setProcessingStartedAt(null);
+        item.setProcessedAt(null);
+        item.setUploadedAt(null);
+        item.setOriginalDeletedAt(null);
+        item.setProcessedS3Key(null);
+        item.setOriginalS3Key(originalKey);
+        item.setUploadUrlExpiresAt(LocalDateTime.now().plusMinutes(s3Properties.getSignedUrlMinutes()));
+        item.setDuplicateOfId(null);
+        item.setImageHash(null);
+        item = clothingRepository.save(item);
+
+        return ClothingItemDTO.UploadUrlResponse.builder()
+                .itemId(item.getId())
+                .uploadUrl(s3Service.presignedPutUrl(originalKey, contentType))
+                .expiresAt(item.getUploadUrlExpiresAt())
+                .build();
+    }
+
+    @Transactional
+    public ClothingItemDTO.ClothingItemDetail markUploadFailed(UUID itemId, User user) {
         ClothingItem item = findItemAndValidateOwnership(itemId, user);
         if (item.getStatus() != Enums.ProcessingStatus.WAITING_FOR_UPLOAD) {
             throw new ValidationException("This upload can no longer be canceled");
@@ -73,7 +101,7 @@ public class ClothingService {
         item.setProcessingDeadlineAt(null);
         item.setOriginalS3Key(null);
         item.setProcessedS3Key(null);
-        return mapToResponse(clothingRepository.save(item));
+        return clothingItemViewMapper.toDetail(clothingRepository.save(item));
     }
 
     private Enums.Category parseRequiredCategory(String value) {
@@ -88,32 +116,32 @@ public class ClothingService {
     }
 
     @Transactional(readOnly = true)
-    public Page<ClothingItemDTO.Summary> getUserItems(
+    public Page<ClothingItemDTO.WardrobeListItem> getUserItems(
             User user, int page, int size) {
         return clothingRepository.findByUserIdAndRemovedAtIsNull(
                 user.getId(),
                 PageRequest.of(page, size, Sort.by("createdAt").descending())
-        ).map(this::mapToSummary);
+        ).map(clothingItemViewMapper::toWardrobeListItem);
     }
 
     @Transactional(readOnly = true)
-    public Page<ClothingItemDTO.Summary> getUserItemsByCategory(
+    public Page<ClothingItemDTO.WardrobeListItem> getUserItemsByCategory(
             User user, String category, int page, int size) {
         Enums.Category cat = Enums.Category.valueOf(category.toUpperCase());
         return clothingRepository.findByUserIdAndCategoryAndRemovedAtIsNull(
                 user.getId(), cat,
                 PageRequest.of(page, size, Sort.by("createdAt").descending())
-        ).map(this::mapToSummary);
+        ).map(clothingItemViewMapper::toWardrobeListItem);
     }
 
     @Transactional(readOnly = true)
-    public ClothingItemDTO.Response getClothingItem(UUID itemId, User user) {
+    public ClothingItemDTO.ClothingItemDetail getClothingItem(UUID itemId, User user) {
         ClothingItem item = findItemAndValidateAccess(itemId, user);
-        return mapToResponse(item);
+        return clothingItemViewMapper.toDetail(item);
     }
 
     @Transactional
-    public ClothingItemDTO.Response updateClothingItem(
+    public ClothingItemDTO.ClothingItemDetail updateClothingItem(
             UUID itemId, ClothingItemDTO.UpdateRequest request, User user) {
         ClothingItem item = findItemAndValidateOwnership(itemId, user);
 
@@ -125,7 +153,7 @@ public class ClothingService {
         item = clothingRepository.save(item);
         log.info("Updated clothing item: {}", itemId);
 
-        return mapToResponse(item);
+        return clothingItemViewMapper.toDetail(item);
     }
 
     @Transactional
@@ -137,7 +165,7 @@ public class ClothingService {
     }
 
     @Transactional(readOnly = true)
-    public Page<ClothingItemDTO.Summary> searchItems(
+    public Page<ClothingItemDTO.WardrobeListItem> searchItems(
             UUID userId, String query, String category, int page, int size) {
         Enums.Category cat = category != null && !category.isBlank()
                 ? Enums.Category.valueOf(category.toUpperCase())
@@ -146,7 +174,7 @@ public class ClothingService {
         return clothingRepository.searchItems(
                 userId, query, cat,
                 PageRequest.of(page, size, Sort.by("createdAt").descending())
-        ).map(this::mapToSummary);
+        ).map(clothingItemViewMapper::toWardrobeListItem);
     }
 
     private ClothingItem findItemAndValidateAccess(UUID itemId, User user) {
@@ -179,40 +207,14 @@ public class ClothingService {
         return item;
     }
 
-    private ClothingItemDTO.Response mapToResponse(ClothingItem item) {
-        return ClothingItemDTO.Response.builder()
-                .id(item.getId())
-                .category(item.getCategory().toString())
-                .imageUrl(imageAccess.urlFor(item))
-                .tags(new java.util.LinkedHashSet<>(item.getTags()))
-                .status(item.getStatus().toString())
-                .processingError(item.getProcessingError())
-                .removedFromWardrobe(item.getRemovedAt() != null)
-                .duplicateOfId(item.getDuplicateOfId())
-                .userId(item.getUser().getId())
-                .createdAt(item.getCreatedAt())
-                .updatedAt(item.getUpdatedAt())
-                .build();
-    }
-
-    private ClothingItemDTO.Summary mapToSummary(ClothingItem item) {
-        return ClothingItemDTO.Summary.builder()
-                .id(item.getId())
-                .category(item.getCategory().toString())
-                .imageUrl(imageAccess.urlFor(item))
-                .status(item.getStatus().toString())
-                .processingError(item.getProcessingError())
-                .removedFromWardrobe(item.getRemovedAt() != null)
-                .duplicateOfId(item.getDuplicateOfId())
-                .userId(item.getUser().getId())
-                .createdAt(item.getCreatedAt())
-                .updatedAt(item.getUpdatedAt())
-                .build();
-    }
-
     private String originalUploadKey(UUID userId, UUID itemId, String contentType) {
         return String.format("users/%s/original/%s.%s",
                 userId, itemId, extensionForContentType(contentType));
+    }
+
+    private boolean isRetryableUploadFailure(ClothingItem item) {
+        return item.getStatus() == Enums.ProcessingStatus.FAILED
+                && "ORIGINAL_UPLOAD_FAILED".equals(item.getProcessingError());
     }
 
     private String normalizeUploadContentType(String contentType) {

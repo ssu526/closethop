@@ -13,9 +13,9 @@ import java.util.Optional;
 
 @Repository
 public interface OutfitRepository extends JpaRepository<Outfit, UUID> {
-    Page<Outfit> findByUserIdAndSuggestedByIsNull(UUID userId, Pageable pageable);
-    Page<Outfit> findByUserIdAndSuggestedByIsNotNull(UUID userId, Pageable pageable);
+    // used for pending suggestions
     Page<Outfit> findByUserIdAndSuggestedByIsNotNullAndAcceptedAtIsNull(UUID userId, Pageable pageable);
+    // used for the main outfit list endpoints(outfits created by user or suggested outfit accepted by user)
     @Query("""
             SELECT o FROM Outfit o
             WHERE o.user.id = :userId
@@ -27,5 +27,6 @@ public interface OutfitRepository extends JpaRepository<Outfit, UUID> {
             @Param("includeCreated") boolean includeCreated,
             @Param("includeAccepted") boolean includeAccepted,
             Pageable pageable);
+    // use the latest created outfit as the feature outfit to be used in the Explore page
     Optional<Outfit> findFirstByUserIdAndSuggestedByIsNullOrderByCreatedAtDesc(UUID userId);
 }

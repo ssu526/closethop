@@ -379,7 +379,7 @@ def claim_job(job: dict) -> dict | None:
             processing_error = NULL
         WHERE id = %s
           AND processing_status = 'WAITING_FOR_UPLOAD'
-        RETURNING id, user_id, original_s3_key, processing_attempt
+        RETURNING id, user_id, original_s3_key
     """
     with postgres_connection() as connection:
         with connection.cursor() as cursor:
@@ -391,7 +391,6 @@ def claim_job(job: dict) -> dict | None:
                 "itemId": str(row[0]),
                 "userId": str(row[1]),
                 "sourceKey": row[2],
-                "attempt": int(row[3] or 1),
             }
 
 

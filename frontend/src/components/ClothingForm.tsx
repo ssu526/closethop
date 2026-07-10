@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
-import type { ClothingItem } from "../types";
+import type { ClothingItemDetail } from "../types";
 import { categories } from "../types";
 import { Button, Field, inputClass } from "./ui";
 
@@ -16,10 +16,14 @@ type Values = z.infer<typeof schema>;
 export function ClothingForm({
   item,
   busy,
+  initialCategory,
+  submitLabel,
   onSubmit
 }: {
-  item?: ClothingItem;
+  item?: ClothingItemDetail;
   busy: boolean;
+  initialCategory?: string;
+  submitLabel?: string;
   onSubmit(values: {
     category?: string;
     tags?: string[];
@@ -32,14 +36,14 @@ export function ClothingForm({
   const { register, handleSubmit, reset, formState, watch } = useForm<Values>({
     resolver: zodResolver(schema),
     defaultValues: {
-      category: item?.category ?? "",
+      category: item?.category ?? initialCategory ?? "",
       tags: item?.tags.join(", ") ?? ""
     }
   });
   useEffect(() => reset({
-    category: item?.category ?? "",
+    category: item?.category ?? initialCategory ?? "",
     tags: item?.tags.join(", ") ?? ""
-  }), [item, reset]);
+  }), [initialCategory, item, reset]);
   const image = showImage ? watch("image")?.[0] : undefined;
   const category = watch("category");
   const preview = useMemo(() => image ? URL.createObjectURL(image) : undefined, [image]);
@@ -120,7 +124,7 @@ export function ClothingForm({
             Boolean(item && !category)
           }
         >
-          {item ? "Save changes" : "Add to wardrobe"}
+          {submitLabel ?? (item ? "Save changes" : "Add to wardrobe")}
         </Button>
       </div>
     </form>

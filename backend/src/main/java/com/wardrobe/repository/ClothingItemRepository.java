@@ -17,10 +17,6 @@ import java.time.LocalDateTime;
 @Repository
 public interface ClothingItemRepository extends JpaRepository<ClothingItem, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("SELECT ci FROM ClothingItem ci WHERE ci.id = :id")
-    java.util.Optional<ClothingItem> findAndLockById(@Param("id") UUID id);
-
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT ci FROM ClothingItem ci WHERE ci.status = :status " +
             "AND ci.processingDeadlineAt IS NOT NULL AND ci.processingDeadlineAt <= :now " +
             "ORDER BY ci.processingDeadlineAt ASC")

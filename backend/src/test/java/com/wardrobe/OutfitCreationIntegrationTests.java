@@ -137,7 +137,7 @@ class OutfitCreationIntegrationTests {
                 .build());
 
         var ids = clothingService.getUserItems(user, 0, 20)
-                .map(ClothingItemDTO.Summary::getId)
+                .map(ClothingItemDTO.WardrobeListItem::getId)
                 .toSet();
 
         assertEquals(Set.of(shirt.getId(), dress.getId()), ids);
@@ -163,10 +163,10 @@ class OutfitCreationIntegrationTests {
                 .build());
 
         var allIds = userService.getPublicWardrobe(owner.getId(), null, null, 0, 20)
-                .map(ClothingItemDTO.Summary::getId)
+                .map(ClothingItemDTO.WardrobeListItem::getId)
                 .toSet();
         var dressIds = userService.getPublicWardrobe(owner.getId(), null, "DRESSES", 0, 20)
-                .map(ClothingItemDTO.Summary::getId)
+                .map(ClothingItemDTO.WardrobeListItem::getId)
                 .toSet();
 
         assertEquals(Set.of(shirt.getId(), dress.getId()), allIds);
@@ -195,7 +195,7 @@ class OutfitCreationIntegrationTests {
                 .build());
 
         var ids = userService.getPublicWardrobe(owner.getId(), "linen", null, 0, 20)
-                .map(ClothingItemDTO.Summary::getId)
+                .map(ClothingItemDTO.WardrobeListItem::getId)
                 .toSet();
 
         assertEquals(Set.of(shirt.getId(), dress.getId()), ids);

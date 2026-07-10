@@ -4,6 +4,8 @@ import com.wardrobe.constants.Enums;
 import com.wardrobe.dto.ClothingItemDTO;
 import com.wardrobe.entity.ClothingItem;
 import com.wardrobe.entity.User;
+import com.wardrobe.exception.ForbiddenException;
+import com.wardrobe.exception.ValidationException;
 import com.wardrobe.repository.ClothingItemRepository;
 import com.wardrobe.repository.UserRepository;
 import com.wardrobe.service.aws.S3Service;
@@ -20,6 +22,7 @@ import java.time.LocalDateTime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,8 +59,8 @@ class DirectUploadIntegrationTests {
         ClothingItem saved = items.findById(response.getItemId()).orElseThrow();
         assertEquals(Enums.ProcessingStatus.WAITING_FOR_UPLOAD, saved.getStatus());
         assertEquals("https://s3.example/upload", response.getUploadUrl());
-        assertEquals(saved.getOriginalS3Key(), response.getOriginalS3Key());
         assertNotNull(saved.getUploadUrlExpiresAt());
+        assertNotNull(response.getExpiresAt());
     }
 
     @Test
@@ -82,6 +85,92 @@ class DirectUploadIntegrationTests {
         assertEquals("ORIGINAL_UPLOAD_FAILED", failed.getProcessingError());
         assertNull(failed.getOriginalS3Key());
         assertNull(failed.getProcessedS3Key());
+    }
+
+    @Test
+    void retriesFailedUploadWithFreshPresignedUrlForSameItem() {
+        User user = users.save(User.builder()
+                .email("retry-upload@example.com")
+                .username("retry-upload")
+                .password("unused")
+                .visibility(Enums.Visibility.PRIVATE)
+                .build());
+        ClothingItem item = items.saveAndFlush(ClothingItem.builder()
+                .category(Enums.Category.TOPS)
+                .status(Enums.ProcessingStatus.FAILED)
+                .processingError("ORIGINAL_UPLOAD_FAILED")
+                .user(user)
+                .build());
+        when(s3Service.presignedPutUrl(
+                org.mockito.ArgumentMatchers.startsWith("users/" + user.getId() + "/original/" + item.getId()),
+                eq("image/png")))
+                .thenReturn("https://s3.example/retry-upload");
+
+        ClothingItemDTO.UploadUrlResponse response = clothingService.retryUploadUrl(
+                item.getId(),
+                ClothingItemDTO.RetryUploadUrlRequest.builder()
+                        .contentType("image/png")
+                        .build(),
+                user);
+
+        ClothingItem retried = items.findById(item.getId()).orElseThrow();
+        assertEquals(Enums.ProcessingStatus.WAITING_FOR_UPLOAD, retried.getStatus());
+        assertEquals("https://s3.example/retry-upload", response.getUploadUrl());
+        assertEquals("users/%s/original/%s.png".formatted(user.getId(), item.getId()), retried.getOriginalS3Key());
+        assertNull(retried.getProcessingError());
+        assertNotNull(retried.getUploadUrlExpiresAt());
+    }
+
+    @Test
+    void rejectsRetryForNonUploadFailures() {
+        User user = users.save(User.builder()
+                .email("retry-invalid@example.com")
+                .username("retry-invalid")
+                .password("unused")
+                .visibility(Enums.Visibility.PRIVATE)
+                .build());
+        ClothingItem item = items.saveAndFlush(ClothingItem.builder()
+                .category(Enums.Category.TOPS)
+                .status(Enums.ProcessingStatus.FAILED)
+                .processingError("PROCESSING_FAILED_USING_ORIGINAL")
+                .user(user)
+                .build());
+
+        assertThrows(ValidationException.class, () -> clothingService.retryUploadUrl(
+                item.getId(),
+                ClothingItemDTO.RetryUploadUrlRequest.builder()
+                        .contentType("image/jpeg")
+                        .build(),
+                user));
+    }
+
+    @Test
+    void rejectsRetryForOtherUsers() {
+        User owner = users.save(User.builder()
+                .email("retry-owner@example.com")
+                .username("retry-owner")
+                .password("unused")
+                .visibility(Enums.Visibility.PRIVATE)
+                .build());
+        User otherUser = users.save(User.builder()
+                .email("retry-other@example.com")
+                .username("retry-other")
+                .password("unused")
+                .visibility(Enums.Visibility.PRIVATE)
+                .build());
+        ClothingItem item = items.saveAndFlush(ClothingItem.builder()
+                .category(Enums.Category.TOPS)
+                .status(Enums.ProcessingStatus.FAILED)
+                .processingError("ORIGINAL_UPLOAD_FAILED")
+                .user(owner)
+                .build());
+
+        assertThrows(ForbiddenException.class, () -> clothingService.retryUploadUrl(
+                item.getId(),
+                ClothingItemDTO.RetryUploadUrlRequest.builder()
+                        .contentType("image/jpeg")
+                        .build(),
+                otherUser));
     }
 
     @Test
@@ -128,11 +217,11 @@ class DirectUploadIntegrationTests {
 
         recoveryService.recoverTimedOutItems();
 
-        ClothingItem ready = items.findById(item.getId()).orElseThrow();
-        assertEquals(Enums.ProcessingStatus.READY, ready.getStatus());
-        assertEquals("PROCESSING_FAILED_USING_ORIGINAL", ready.getProcessingError());
-        assertEquals("users/%s/original/item.jpg".formatted(user.getId()), ready.getOriginalS3Key());
-        assertNull(ready.getProcessedS3Key());
+        ClothingItem failed = items.findById(item.getId()).orElseThrow();
+        assertEquals(Enums.ProcessingStatus.FAILED, failed.getStatus());
+        assertEquals("PROCESSING_FAILED_USING_ORIGINAL", failed.getProcessingError());
+        assertEquals("users/%s/original/item.jpg".formatted(user.getId()), failed.getOriginalS3Key());
+        assertNull(failed.getProcessedS3Key());
     }
 
     @Test

@@ -96,6 +96,7 @@ export function Modal({
   open,
   title,
   onClose,
+  disableClose = false,
   wide = false,
   extraWide = false,
   children
@@ -103,6 +104,7 @@ export function Modal({
   open: boolean;
   title: string;
   onClose(): void;
+  disableClose?: boolean;
   wide?: boolean;
   extraWide?: boolean;
   children: ReactNode;
@@ -113,7 +115,12 @@ export function Modal({
       <div className={`max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-white p-6 shadow-2xl sm:rounded-[2rem] sm:p-8 ${extraWide ? "max-w-6xl" : wide ? "max-w-4xl" : "max-w-2xl"}`}>
         <div className="mb-6 flex items-center justify-between">
           <h2 className="font-display text-3xl">{title}</h2>
-          <button className="rounded-full p-2 hover:bg-ink/5" onClick={onClose} aria-label="Close">
+          <button
+            className="rounded-full p-2 hover:bg-ink/5 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={onClose}
+            disabled={disableClose}
+            aria-label="Close"
+          >
             <X />
           </button>
         </div>

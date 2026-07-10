@@ -12,7 +12,7 @@ import com.wardrobe.exception.ValidationException;
 import com.wardrobe.repository.ClothingItemRepository;
 import com.wardrobe.repository.UserRepository;
 import com.wardrobe.repository.OutfitRepository;
-import com.wardrobe.service.aws.ImageAccessService;
+import com.wardrobe.service.wardrobe.ClothingItemViewMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -31,7 +31,7 @@ public class UserService {
     private final UserRepository userRepository;
     private final ClothingItemRepository clothingRepository;
     private final OutfitRepository outfitRepository;
-    private final ImageAccessService imageAccess;
+    private final ClothingItemViewMapper clothingItemViewMapper;
 
 
     @Transactional(readOnly = true)
@@ -61,7 +61,7 @@ public class UserService {
     }
 
     @Transactional(readOnly = true)
-    public Page<ClothingItemDTO.Summary> getPublicWardrobe(
+    public Page<ClothingItemDTO.WardrobeListItem> getPublicWardrobe(
             UUID userId, String query, String category, int page, int size) {
         User owner = findPublicUser(userId);
         PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
@@ -81,18 +81,7 @@ public class UserService {
         } else {
             items = clothingRepository.findByUserIdAndCategoryAndRemovedAtIsNull(owner.getId(), selectedCategory, pageable);
         }
-        return items.map(item -> ClothingItemDTO.Summary.builder()
-                .id(item.getId())
-                .category(item.getCategory().toString())
-                .imageUrl(imageAccess.urlFor(item))
-                .status(item.getStatus().toString())
-                .processingError(item.getProcessingError())
-                .removedFromWardrobe(item.getRemovedAt() != null)
-                .duplicateOfId(item.getDuplicateOfId())
-                .userId(owner.getId())
-                .createdAt(item.getCreatedAt())
-                .updatedAt(item.getUpdatedAt())
-                .build());
+        return items.map(clothingItemViewMapper::toWardrobeListItem);
     }
 
 
@@ -129,7 +118,8 @@ public class UserService {
                 featuredOutfit == null
                         ? List.of()
                         : featuredOutfit.getItems().stream()
-                                .map(imageAccess::urlFor)
+                                .map(clothingItemViewMapper::toOutfitItem)
+                                .map(ClothingItemDTO.OutfitItem::getImageUrl)
                                 .limit(4)
                                 .toList()
         );
@@ -146,15 +136,7 @@ public class UserService {
         return OutfitDTO.Response.builder()
                 .id(outfit.getId())
                 .items(outfit.getItems().stream()
-                        .map(item -> ClothingItemDTO.Response.builder()
-                                .id(item.getId())
-                                .category(item.getCategory().toString())
-                                .imageUrl(imageAccess.urlFor(item))
-                                .tags(new java.util.LinkedHashSet<>(item.getTags()))
-                                .status(item.getStatus().toString())
-                                .removedFromWardrobe(item.getRemovedAt() != null)
-                                .userId(item.getUser().getId())
-                                .build())
+                        .map(clothingItemViewMapper::toOutfitItem)
                         .collect(java.util.stream.Collectors.toSet()))
                 .userId(outfit.getUser().getId())
                 .suggestedBy(outfit.getSuggestedBy() == null ? null : new OutfitDTO.SuggestedBySummary(

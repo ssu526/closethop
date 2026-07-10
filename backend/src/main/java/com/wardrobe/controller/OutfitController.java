@@ -58,7 +58,7 @@ public class OutfitController {
     }
 
     @PostMapping("/suggestions")
-    public ResponseEntity<java.util.List<ClothingItemDTO.Response>> suggestItem(
+    public ResponseEntity<java.util.List<ClothingItemDTO.ClothingItemDetail>> suggestItem(
             @Valid @RequestBody OutfitDTO.AiOutfitSuggestionRequest request) {
         User user = currentUserService.getCurrentUser();
         return ResponseEntity.ok(outfitService.suggestItems(request, user));

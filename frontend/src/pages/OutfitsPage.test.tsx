@@ -9,33 +9,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as authModule from "../auth/AuthContext";
 import { api } from "../lib/api";
 import type {
-  ClothingItemSummary,
   Outfit,
   PageResponse,
   UserProfile,
+  WardrobeListItem,
 } from "../types";
 import { OutfitsPage } from "./OutfitsPage";
 
 function makeSummary(
-  overrides: Partial<ClothingItemSummary> = {},
-): ClothingItemSummary {
+  overrides: Partial<WardrobeListItem> = {},
+): WardrobeListItem {
   return {
     id: "item-1",
     category: "TOPS",
     imageUrl: "https://example.com/item-1.png",
-    status: "READY",
-    processingError: null,
-    duplicateOfId: null,
-    removedFromWardrobe: false,
-    subcategory: null,
-    colors: [],
-    pattern: null,
-    materials: [],
-    seasons: [],
-    occasions: [],
-    userId: "user-1",
-    createdAt: "2026-07-07T00:00:00Z",
-    updatedAt: "2026-07-07T00:00:00Z",
+    processingState: "READY",
+    failureReason: null,
+    displayNote: null,
     ...overrides,
   };
 }

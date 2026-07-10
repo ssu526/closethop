@@ -81,21 +81,19 @@ describe("ClosetHop EC2 Compose infrastructure", () => {
   test("provisions asynchronous image processing resources", () => {
     const stack = template();
     stack.resourceCountIs("AWS::SQS::Queue", 2);
-    stack.hasResourceProperties("Custom::S3BucketNotifications", {
-      NotificationConfiguration: {
-        QueueConfigurations: Match.arrayWith([
+    stack.resourceCountIs("AWS::Lambda::Function", 0);
+    stack.hasResourceProperties("AWS::SQS::QueuePolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
           Match.objectLike({
-            Events: ["s3:ObjectCreated:*"],
-            Filter: {
-              Key: {
-                FilterRules: [{ Name: "prefix", Value: "users/" }]
-              }
-            }
+            Principal: { Service: "s3.amazonaws.com" },
+            Action: "sqs:SendMessage"
           })
         ])
       }
     });
     stack.resourceCountIs("AWS::Lambda::EventSourceMapping", 0);
+    stack.hasOutput("ManualS3NotificationPrefix", { Value: "users/" });
   });
 
   test("provisions an SSM-managed EC2 host for Docker Compose", () => {

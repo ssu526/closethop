@@ -1,9 +1,9 @@
 import type {
   ApiErrorBody,
-  ClothingItem,
-  ClothingItemSummary,
+  ClothingItemDetail,
   Outfit,
   PageResponse,
+  WardrobeListItem,
   UserProfile
 } from "../types";
 
@@ -60,6 +60,12 @@ function queryString(values: Record<string, string | number | undefined>) {
   return query.toString();
 }
 
+export interface UploadUrlResponse {
+  itemId: string;
+  uploadUrl: string;
+  expiresAt: string;
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<{ userId: string; username: string; token: string }>("/api/auth/login", {
@@ -101,7 +107,7 @@ export const api = {
       userId: string,
       filters: { page?: number; size?: number; query?: string; category?: string } = {}
     ) =>
-      request<PageResponse<ClothingItemSummary>>(`/api/users/${userId}/clothing?${queryString({
+      request<PageResponse<WardrobeListItem>>(`/api/users/${userId}/clothing?${queryString({
         page: filters.page ?? 0,
         size: filters.size ?? 12,
         query: filters.query,
@@ -117,7 +123,7 @@ export const api = {
         : category
           ? `/api/clothing/category/${category}`
           : "/api/clothing";
-      return request<PageResponse<ClothingItemSummary>>(
+      return request<PageResponse<WardrobeListItem>>(
         `${base}?${queryString({
           page: filters.page ?? 0,
           size: filters.size ?? 12,
@@ -126,35 +132,45 @@ export const api = {
         })}`
       );
     },
-    get: (id: string) => request<ClothingItem>(`/api/clothing/${id}`),
-    create: async (values: { category: string; image: File }) => {
-      const upload = await request<{
-        itemId: string;
-        uploadUrl: string;
-        originalS3Key: string;
-        expiresAt: string;
-        item: ClothingItem;
-      }>("/api/clothing/upload-url", {
+    get: (id: string) => request<ClothingItemDetail>(`/api/clothing/${id}`),
+    createDraftUpload: (values: { category: string; contentType: string }) =>
+      request<UploadUrlResponse>("/api/clothing/upload-url", {
         method: "POST",
-        body: JSON.stringify({
-          category: values.category,
-          contentType: values.image.type || "image/jpeg"
-        })
-      });
-      const response = await fetch(upload.uploadUrl, {
+        body: JSON.stringify(values)
+      }),
+    retryUploadUrl: (id: string, contentType: string) =>
+      request<UploadUrlResponse>(`/api/clothing/${id}/retry-upload-url`, {
+        method: "POST",
+        body: JSON.stringify({ contentType })
+      }),
+    uploadOriginalToUrl: async (uploadUrl: string, image: File) => {
+      const response = await fetch(uploadUrl, {
         method: "PUT",
-        headers: { "Content-Type": values.image.type || "image/jpeg" },
-        body: values.image
+        headers: { "Content-Type": image.type || "image/jpeg" },
+        body: image
       });
       if (!response.ok) {
+        throw new ApiError("Upload failed. Try again.", response.status);
+      }
+    },
+    markUploadFailed: (id: string) =>
+      request<ClothingItemDetail>(`/api/clothing/${id}/upload-failed`, { method: "POST" }),
+    create: async (values: { category: string; image: File }) => {
+      const upload = await api.clothing.createDraftUpload({
+        category: values.category,
+        contentType: values.image.type || "image/jpeg"
+      });
+      try {
+        await api.clothing.uploadOriginalToUrl(upload.uploadUrl, values.image);
+      } catch (error) {
         try {
-          await request<ClothingItem>(`/api/clothing/${upload.itemId}/upload-failed`, { method: "POST" });
+          await api.clothing.markUploadFailed(upload.itemId);
         } catch {
           // Cleanup job will reconcile abandoned uploads if reporting failure fails.
         }
-        throw new ApiError("Upload failed. Try again.", response.status);
+        throw error;
       }
-      return request<ClothingItem>(`/api/clothing/${upload.itemId}`);
+      return request<ClothingItemDetail>(`/api/clothing/${upload.itemId}`);
     },
     update: (id: string, values: {
       category: string;
@@ -166,7 +182,7 @@ export const api = {
       seasons?: string[];
       occasions?: string[];
     }) =>
-      request<ClothingItem>(`/api/clothing/${id}`, {
+      request<ClothingItemDetail>(`/api/clothing/${id}`, {
         method: "PUT",
         body: JSON.stringify(values)
       }),
@@ -195,7 +211,7 @@ export const api = {
     update: (id: string, values: { clothingItemIds: string[] }) =>
       request<Outfit>(`/api/outfits/${id}`, { method: "PUT", body: JSON.stringify(values) }),
     suggest: (clothingItemIds: string[], category: string) =>
-      request<ClothingItem[]>("/api/outfits/suggestions", {
+      request<ClothingItemDetail[]>("/api/outfits/suggestions", {
         method: "POST",
         body: JSON.stringify({ clothingItemIds, category })
       }),
