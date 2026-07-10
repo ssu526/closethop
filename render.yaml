@@ -78,7 +78,9 @@ services:
       - key: VISION_MODEL
         value: gemini-2.5-flash-lite
       - key: MAX_SOURCE_EDGE
-        value: "1600"
+        value: "1280"
+      - key: BACKGROUND_REMOVAL_MODE
+        value: light_only
       - key: PROCESSING_DEADLINE_SECONDS
         value: "30"
       - key: REMBG_SESSION_CACHE_MODE

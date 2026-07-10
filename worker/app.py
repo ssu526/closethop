@@ -100,6 +100,7 @@ def gemini_client():
 MAX_SIZE = 768
 MAX_SOURCE_EDGE = int(os.getenv("MAX_SOURCE_EDGE", "1600"))
 REMBG_SESSION_CACHE_MODE = os.getenv("REMBG_SESSION_CACHE_MODE", "none").lower()
+BACKGROUND_REMOVAL_MODE = os.getenv("BACKGROUND_REMOVAL_MODE", "hybrid").lower()
 
 
 @lru_cache(maxsize=2)
@@ -127,10 +128,7 @@ def normalize_image(source: bytes) -> tuple[bytes, str]:
     with Image.open(io.BytesIO(source)) as opened:
         original = downscale_for_processing(ImageOps.exif_transpose(opened).convert("RGBA"))
 
-    try:
-        foreground = remove_background_with_rembg(original)
-    except ValueError:
-        foreground = remove_light_background(original)
+    foreground = remove_background(original)
 
     cropped = crop_to_alpha(foreground)
 
@@ -150,6 +148,19 @@ def normalize_image(source: bytes) -> tuple[bytes, str]:
 
     normalized = output.getvalue()
     return normalized, hashlib.sha256(normalized).hexdigest()
+
+
+def remove_background(image: Image.Image) -> Image.Image:
+    if BACKGROUND_REMOVAL_MODE == "light_only":
+        return remove_light_background(image)
+    if BACKGROUND_REMOVAL_MODE == "rembg_only":
+        return remove_background_with_rembg(image)
+    if BACKGROUND_REMOVAL_MODE == "hybrid":
+        try:
+            return remove_background_with_rembg(image)
+        except ValueError:
+            return remove_light_background(image)
+    raise ValueError(f"UNSUPPORTED_BACKGROUND_REMOVAL_MODE:{BACKGROUND_REMOVAL_MODE}")
 
 
 def remove_background_with_rembg(image: Image.Image) -> Image.Image:

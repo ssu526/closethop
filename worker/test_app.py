@@ -86,6 +86,42 @@ def test_rembg_session_defaults_to_uncached_fallback(monkeypatch):
     ]
 
 
+def test_light_only_background_removal_skips_rembg(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import app
+
+    sentinel = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
+    monkeypatch.setattr(app, "BACKGROUND_REMOVAL_MODE", "light_only")
+    monkeypatch.setattr(app, "remove_light_background", lambda _image: sentinel)
+    monkeypatch.setattr(
+        app,
+        "remove_background_with_rembg",
+        lambda _image: (_ for _ in ()).throw(AssertionError("rembg should not run")),
+    )
+
+    result = app.remove_background(Image.new("RGBA", (10, 10), (255, 255, 255, 255)))
+
+    assert result is sentinel
+
+
+def test_hybrid_background_removal_falls_back_to_light(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import app
+
+    sentinel = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
+    monkeypatch.setattr(app, "BACKGROUND_REMOVAL_MODE", "hybrid")
+    monkeypatch.setattr(app, "remove_background_with_rembg", lambda _image: (_ for _ in ()).throw(ValueError("low confidence")))
+    monkeypatch.setattr(app, "remove_light_background", lambda _image: sentinel)
+
+    result = app.remove_background(Image.new("RGBA", (10, 10), (255, 255, 255, 255)))
+
+    assert result is sentinel
+
+
 def test_postgres_lookup_reuses_existing_metadata(monkeypatch):
     import app
 
