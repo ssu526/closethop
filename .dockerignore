@@ -6,4 +6,3 @@
 **/dist
 **/*.tsbuildinfo
 backend/data
-infrastructure/cdk.out

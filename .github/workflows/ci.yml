@@ -53,22 +53,6 @@ jobs:
       - run: npm run build
         working-directory: frontend
 
-  infrastructure:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: infrastructure/package-lock.json
-      - run: npm ci
-        working-directory: infrastructure
-      - run: npm test -- --runInBand
-        working-directory: infrastructure
-      - run: npm run build
-        working-directory: infrastructure
-
   security:
     runs-on: ubuntu-latest
     steps:

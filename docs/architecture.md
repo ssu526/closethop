@@ -91,7 +91,3 @@ The Python worker periodically scans `WAITING_FOR_UPLOAD` rows with an `original
 ### Removed Clothing Cleanup
 
 `RemovedClothingCleanupService` is enabled with `app.removed-clothing-cleanup-enabled=true`. On `app.removed-clothing-cleanup-cron`, it purges soft-deleted clothing items older than `app.removed-clothing-retention-days` that are not attached to outfits, deletes their processed object and any still-available original object, and removes the DB row.
-
-### Postgres Backup Job
-
-The `backup` container in `deploy/ec2/compose.prod.yml` runs `pg_dump` and writes dumps to the separate S3 backup bucket under `BACKUP_PREFIX`, preserving database recovery points independently from the image bucket.
