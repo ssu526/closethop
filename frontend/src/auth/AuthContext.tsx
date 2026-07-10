@@ -261,7 +261,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       confirmEmailOtp,
       signInWithGoogle: async () => {
         if (mode !== "cognito") throw new Error("Google sign-in is only available in Cognito mode.");
-        await clearCognitoSessionForNewSignIn();
         try {
           await signInWithRedirect({ provider: "Google" });
         } catch (reason) {

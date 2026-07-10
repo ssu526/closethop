@@ -84,7 +84,6 @@ describe("AuthProvider Cognito auth", () => {
 
     authMocks.getCurrentUser
       .mockRejectedValueOnce(new Error("not signed in"))
-      .mockResolvedValueOnce({ userId: "user-1", username: "google_123" })
       .mockResolvedValueOnce({ userId: "user-1", username: "google_123" });
     authMocks.signInWithRedirect.mockRejectedValueOnce(new Error("There is already a signed in user."));
 
@@ -103,6 +102,25 @@ describe("AuthProvider Cognito auth", () => {
       expect(screen.getByText("sue")).toBeInTheDocument();
     });
     expect(api.users.updateProfileName).toHaveBeenCalledWith("sue");
+  });
+
+  it("starts Google Hosted UI without signing out first", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    await waitFor(() => {
+      expect(authMocks.signInWithRedirect).toHaveBeenCalledWith({ provider: "Google" });
+    });
+    expect(authMocks.signOut).not.toHaveBeenCalled();
   });
 
   it("normalizes the hosted UI domain before configuring Amplify", async () => {
