@@ -16,7 +16,9 @@ RUN useradd --system --uid 10001 wardrobe \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/backend/target/backend-0.0.1-SNAPSHOT.jar app.jar
+COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 USER wardrobe
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

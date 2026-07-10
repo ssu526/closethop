@@ -1,0 +1,93 @@
+services:
+  - type: web
+    runtime: docker
+    name: closethop-api
+    region: virginia
+    plan: free
+    numInstances: 1
+    dockerContext: .
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: SERVER_PORT
+        value: "10000"
+      - key: DATASOURCE_URL
+        fromDatabase:
+          name: closethop-postgres
+          property: connectionString
+      - key: DATASOURCE_USERNAME
+        fromDatabase:
+          name: closethop-postgres
+          property: user
+      - key: DATASOURCE_PASSWORD
+        fromDatabase:
+          name: closethop-postgres
+          property: password
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: COGNITO_ISSUER
+        sync: false
+      - key: COGNITO_CLIENT_ID
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OUTFIT_AI_MODEL
+        value: gemini-2.5-flash-lite
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+  - type: worker
+    runtime: docker
+    name: closethop-worker
+    region: virginia
+    plan: free
+    numInstances: 1
+    dockerContext: .
+    dockerfilePath: ./worker/Dockerfile
+    envVars:
+      - key: DATASOURCE_URL
+        fromDatabase:
+          name: closethop-postgres
+          property: connectionString
+      - key: DATASOURCE_USERNAME
+        fromDatabase:
+          name: closethop-postgres
+          property: user
+      - key: DATASOURCE_PASSWORD
+        fromDatabase:
+          name: closethop-postgres
+          property: password
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_DEFAULT_REGION
+        value: us-east-1
+      - key: IMAGE_BUCKET
+        sync: false
+      - key: PROCESSING_QUEUE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: VISION_MODEL
+        value: gemini-2.5-flash-lite
+      - key: METRICS_ENABLED
+        value: "false"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+databases:
+  - name: closethop-postgres
+    region: virginia
+    plan: free
+    databaseName: closethop
+    user: closethop
+    ipAllowList: []

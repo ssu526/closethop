@@ -3,92 +3,39 @@
 ClosetHop is a wardrobe management app with a React frontend, a Spring Boot API,
 and a Python image-processing worker.
 
-<img width="924" height="713" alt="Screenshot 2026-07-09 at 3 32 57 PM" src="https://github.com/user-attachments/assets/952b5117-8d49-4278-a502-770aa6ce1cc4" />
-
 ## Architecture
 
-Production splits responsibilities between a Vercel-hosted frontend, an EC2
-app host running Docker Compose, and managed AWS services for auth, storage,
-queues, async processing, and backups.
+Production runs the application stack on Render, with AWS still handling auth,
+storage, and async processing.
 
+```mermaid
+flowchart LR
+  U[User] --> F[Frontend static site]
+  F --> B[Spring Boot API on Render]
+  B --> P[(Render Postgres)]
+  B -->|presigned upload URL| S3[(Private S3 image bucket)]
+  F -->|direct PUT| S3
+  S3 -->|ObjectCreated original events| Q[SQS processing queue]
+  Q --> W[Python worker on Render]
+  W --> S3
+  W --> P
+  F --> C[Cognito hosted auth]
 ```
-                                  ┌─────────────┐
-                                  │    User     │
-                                  └──────┬──────┘
-                                         │
-                                         ▼
-                         ┌────────────────────────────────┐
-                         │     Vercel Frontend (React)    │
-                         └──────────────┬─────────────────┘
-                                        │
-               ┌────────────────────────┼────────────────────────┐
-               │                        │                        │
-      /api rewrite              Direct PUT             Hosted Authentication
-               │                        │                        │
-               ▼                        ▼                        ▼
-      ┌─────────────────┐      ┌──────────────────┐    ┌──────────────────┐
-      │  Nginx on EC2   │      │ Private S3 Bucket│    │ Cognito Hosted   │
-      └────────┬────────┘      │ (Images)         │    │ Auth             │
-               │               └────────┬─────────┘    └──────────────────┘
-               ▼                        │
-      ┌─────────────────────┐           │
-      │ Spring Boot         │◄──────────┘
-      │ Container           │  Presigned Upload URL
-      └─────────┬───────────┘
-                │
-        ┌───────┴────────┐
-        │                │
-        ▼                ▼
- ┌───────────────┐  ┌──────────────────┐
- │ Postgres EBS  │  │ ObjectCreated    │
- └───────────────┘  │ Event            │
-                    └────────┬─────────┘
-                             ▼
-                    ┌──────────────────┐
-                    │    SQS Queue     │
-                    └────────┬─────────┘
-                             ▼
-                    ┌──────────────────┐
-                    │ Python Worker    │
-                    │ Container        │
-                    └──────┬─────┬─────┘
-                           │     │
-                           ▼     ▼
-                   ┌──────────┐ ┌───────────────┐
-                   │ S3 Bucket│ │ Postgres EBS  │
-                   └──────────┘ └───────────────┘
-
-             ┌──────────────────────┐
-             │   pg_dump Backup Job │
-             └──────────┬───────────┘
-                        ▼
-             ┌──────────────────────┐
-             │   S3 Backup Bucket   │
-             └──────────────────────┘
-```
-
-Production request flow starts in Vercel, where `/api/*` is rewritten to nginx
-on a single EC2 instance. nginx proxies requests to the Spring Boot container,
-which uses a Postgres container persisted on EBS.
 
 Image uploads go directly from the browser to a private S3 bucket using
 presigned URLs issued by Spring. S3 ObjectCreated notifications push original
 image work to SQS, and the Python worker atomically claims rows in Postgres,
-processes images, detects duplicates, and writes final item state directly. A
-scheduled backup job writes Postgres dumps to a separate S3 backup bucket.
+processes images, detects duplicates, and writes final item state directly.
 
 See [`docs/architecture.md`](docs/architecture.md) for the detailed upload
 state diagram, failure flows, and cleanup jobs.
-
 
 ## Project Layout
 
 - `frontend/` React + TypeScript UI
 - `backend/` Spring Boot HTTP API
 - `worker/` Python SQS image-processing worker
-- `infrastructure/` AWS CDK infrastructure for production
-- `deploy/ec2/` EC2 deployment configuration, including the production app stack
-  in [`deploy/ec2/compose.prod.yml`](deploy/ec2/compose.prod.yml)
+- `render.yaml` Render blueprint for the API, worker, and Postgres services
 
 ## Prerequisites
 
@@ -99,126 +46,76 @@ state diagram, failure flows, and cleanup jobs.
 
 ## Production Deployment
 
+### Render services
+
+The active deployment path on `main` uses:
+
+- Render `web` service for the Spring Boot API
+- Render `worker` service for the Python image processor
+- Render Postgres for the application database
+- AWS S3 for image storage
+- AWS SQS for async image processing
+- AWS Cognito for authentication
+
+The repository root includes [`render.yaml`](render.yaml), which defines the
+Render blueprint for the backend services.
+
 ### AWS prerequisites
 
-1. Configure an AWS account and bootstrap the target account/region with CDK.
-2. Create Google OAuth web credentials.
-3. Create the OAuth and Gemini secrets expected by the stack:
+You still need an AWS account with:
 
-   ```bash
-   aws secretsmanager create-secret \
-     --name closethop/dev/google-oauth \
-     --secret-string '{"clientId":"GOOGLE_CLIENT_ID","clientSecret":"GOOGLE_CLIENT_SECRET"}'
+- S3 for image storage
+- SQS for image processing events
+- Cognito for auth
 
-   aws secretsmanager create-secret \
-     --name closethop/dev/gemini \
-     --secret-string '{"apiKey":"GEMINI_API_KEY"}'
-   ```
+You also need runtime values for:
 
-After the first deployment, add the `GoogleOAuthCallbackUrl` stack output to
-the authorized redirect URIs in Google Cloud Console.
+- `AWS_S3_BUCKET`
+- `PROCESSING_QUEUE_URL`
+- `COGNITO_ISSUER`
+- `COGNITO_CLIENT_ID`
+- `GEMINI_API_KEY`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
 
-### Validate and synthesize infrastructure
+### Render API, worker, and database
 
-```bash
-cd infrastructure
-npm install
-npm test
-npm run build
-npm run synth
-```
+1. Create a new Render Blueprint from [`render.yaml`](render.yaml).
+2. Let Render provision:
+   - `closethop-api`
+   - `closethop-worker`
+   - `closethop-postgres`
+3. When prompted for `sync: false` values, set:
+   - `AWS_S3_BUCKET`
+   - `COGNITO_ISSUER`
+   - `COGNITO_CLIENT_ID`
+   - `CORS_ALLOWED_ORIGINS`
+   - `GEMINI_API_KEY`
+   - `AWS_ACCESS_KEY_ID`
+   - `AWS_SECRET_ACCESS_KEY`
+   - `IMAGE_BUCKET`
+   - `PROCESSING_QUEUE_URL`
 
-Override configuration with CDK context:
+Deployment notes:
 
-```bash
-cd infrastructure
-npx cdk synth \
-  -c callbackUrl=https://app.example.com/auth/callback \
-  -c logoutUrl=https://app.example.com \
-  -c googleSecretName=closethop/dev/google-oauth \
-  -c geminiSecretName=closethop/dev/gemini \
-  -c alertEmail=alerts@example.com
-```
+- `backend/Dockerfile` accepts Render-style Postgres URLs and normalizes them
+  for Spring Boot at startup.
+- The current setup is intended to start with one API instance and one worker
+  instance.
+- Free Render plans are fine for validation, but not for durable production.
 
-`alertEmail` is optional. When provided, the stack creates an SNS topic,
-subscribes the email address, and routes CloudWatch alarm notifications to it.
-The subscription remains pending until the recipient confirms the AWS email.
+### Frontend hosting
 
-### EC2 deployment
+Deploy `frontend/` as a static site. If you are also hosting the frontend on
+Render, create a Static Site pointing at `frontend/` with:
 
-The EC2 instance is reachable through AWS Systems Manager Session Manager; SSH
-is not opened by the stack. After CDK deploy finishes, connect to the instance
-and install the app:
+- Build command: `npm install && npm run build`
+- Publish directory: `dist`
 
-```bash
-sudo mkdir -p /opt/closethop
-sudo chown ec2-user:ec2-user /opt/closethop
-cd /opt/closethop
-git clone https://github.com/YOUR_ORG/YOUR_REPO.git repo
-cd repo/deploy/ec2
-cp .env.example .env
-```
-
-Edit `.env` using stack outputs:
-
-- `AWS_S3_BUCKET` from `ImageBucketName`
-- `BACKUP_BUCKET` from `DatabaseBackupBucketName`
-- `PROCESSING_QUEUE_URL` from `ProcessingQueueUrl`
-- `COGNITO_ISSUER` from `CognitoIssuer`
-- `COGNITO_CLIENT_ID` from `UserPoolClientId`
-- `CORS_ALLOWED_ORIGINS` set to the Vercel app origin
-- `POSTGRES_PASSWORD` set to a long random value
-- `GEMINI_API_KEY` set to the Gemini API key used by the backend outfit AI
-
-Start the production Compose stack:
-
-```bash
-docker compose --env-file .env -f compose.prod.yml up -d --build
-docker compose --env-file .env -f compose.prod.yml ps
-curl http://localhost/health
-```
-
-The nginx container listens on ports 80 and 443. It creates a short-lived
-self-signed certificate on first boot so 443 is available immediately. Replace
-`deploy/ec2/certs/fullchain.pem` and `deploy/ec2/certs/privkey.pem` with
-Let's Encrypt or managed proxy certificates before treating HTTPS as production
-trusted.
-
-### Backups and restore
-
-Install the nightly Postgres backup cron:
-
-```bash
-cd deploy/ec2
-chmod +x install-backup-cron.sh
-./install-backup-cron.sh
-```
-
-Run a manual backup:
-
-```bash
-cd deploy/ec2
-docker compose --env-file .env -f compose.prod.yml --profile backup run --rm backup
-```
-
-Restore a backup:
-
-```bash
-aws s3 cp s3://$BACKUP_BUCKET/postgres/closethop-YYYYMMDDTHHMMSSZ.dump /data/closethop/backups/restore.dump
-docker compose --env-file .env -f compose.prod.yml exec postgres \
-  pg_restore --clean --if-exists --no-owner \
-  --username "$POSTGRES_USER" \
-  --dbname "$POSTGRES_DB" \
-  /backups/restore.dump
-```
-
-### Vercel configuration
-
-Set these production environment variables in Vercel:
+Set these production environment variables for the frontend:
 
 ```dotenv
-API_ORIGIN=http://EC2_PUBLIC_DNS_NAME
-VITE_API_BASE_URL=/
+VITE_API_BASE_URL=https://closethop-api.onrender.com
 VITE_AUTH_MODE=cognito
 VITE_COGNITO_USER_POOL_ID=us-east-1_example
 VITE_COGNITO_CLIENT_ID=exampleclientid
@@ -227,14 +124,12 @@ VITE_COGNITO_REDIRECT_SIGN_IN=https://app.example.com/auth/callback
 VITE_COGNITO_REDIRECT_SIGN_OUT=https://app.example.com
 ```
 
-`frontend/vercel.json` sends `/api/*` to the EC2 nginx origin first and falls
-back to `index.html` for client-side routes.
-
+Set backend `CORS_ALLOWED_ORIGINS` to the frontend origin.
 
 ## Start Locally
+
 In local development, the app uses Compose-managed Postgres and LocalStack for
 S3 and SQS so the full upload pipeline can run without AWS.
-
 
 1. Start LocalStack, Postgres, and the Python image worker from the backend
    compose file:
@@ -331,21 +226,11 @@ cd backend
 docker compose exec localstack awslocal s3 ls s3://closethop-images --recursive
 ```
 
-Infrastructure validation:
-
-```bash
-cd infrastructure
-npm test
-npm run build
-npm run synth
-```
-
 ## Authentication Modes
 
 The frontend supports local auth by default and Cognito in production.
 
-For Cognito mode, copy the CDK stack outputs into `frontend/.env`, set
-`VITE_AUTH_MODE=cognito`, and provide:
+For Cognito mode, set `VITE_AUTH_MODE=cognito` in `frontend/.env` and provide:
 
 - `VITE_COGNITO_USER_POOL_ID`
 - `VITE_COGNITO_CLIENT_ID`
@@ -354,12 +239,13 @@ For Cognito mode, copy the CDK stack outputs into `frontend/.env`, set
 
 The Cognito user pool must allow the `USER_AUTH` flow and email OTP. Google
 sign-in also requires the client configuration and Cognito
-`/oauth2/idpresponse` callback described in the production deployment section.
+`/oauth2/idpresponse` callback.
 
 ## Configuration Notes
 
 - `frontend/.env.example` controls the API base URL and auth mode.
-- `backend/.env.example` is used by the backend LocalStack/Postgres compose setup.
+- `backend/.env.example` is used by the backend LocalStack/Postgres compose
+  setup.
 - The backend can also run against PostgreSQL and Cognito in production via the
   values documented in `backend/.env.example`.
 - Production runs separate API and Python worker containers. The Python worker
