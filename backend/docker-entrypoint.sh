@@ -12,17 +12,20 @@ fi
 normalize_render_postgres_url() {
   raw_url="$1"
   scheme_and_rest="${raw_url#*://}"
-  credentials="${scheme_and_rest%%@*}"
-  host_and_path="${scheme_and_rest#*@}"
-  username="${credentials%%:*}"
-  password="${credentials#*:}"
+  host_and_path="${scheme_and_rest##*@}"
 
-  if [ -n "${username}" ] && [ "${username}" != "${credentials}" ] && [ -z "${DATASOURCE_USERNAME:-}" ]; then
-    export DATASOURCE_USERNAME="${username}"
-  fi
+  if [ "${host_and_path}" != "${scheme_and_rest}" ]; then
+    credentials="${scheme_and_rest%"@$host_and_path"}"
+    username="${credentials%%:*}"
+    password="${credentials#*:}"
 
-  if [ -n "${password}" ] && [ "${password}" != "${credentials}" ] && [ -z "${DATASOURCE_PASSWORD:-}" ]; then
-    export DATASOURCE_PASSWORD="${password}"
+    if [ -n "${username}" ] && [ "${username}" != "${credentials}" ] && [ -z "${DATASOURCE_USERNAME:-}" ]; then
+      export DATASOURCE_USERNAME="${username}"
+    fi
+
+    if [ -n "${password}" ] && [ "${password}" != "${credentials}" ] && [ -z "${DATASOURCE_PASSWORD:-}" ]; then
+      export DATASOURCE_PASSWORD="${password}"
+    fi
   fi
 
   export DATASOURCE_URL="jdbc:postgresql://${host_and_path}"
