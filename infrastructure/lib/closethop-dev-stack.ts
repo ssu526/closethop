@@ -12,7 +12,6 @@ import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
-import * as s3Notifications from "aws-cdk-lib/aws-s3-notifications";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
@@ -58,7 +57,6 @@ export class ClosetHopDevStack extends Stack {
       enforceSSL: true,
       versioned: isProduction,
       removalPolicy: dataRemovalPolicy,
-      autoDeleteObjects: !isProduction,
       cors: [
         {
           allowedMethods: [
@@ -92,7 +90,6 @@ export class ClosetHopDevStack extends Stack {
       enforceSSL: true,
       versioned: isProduction,
       removalPolicy: dataRemovalPolicy,
-      autoDeleteObjects: !isProduction,
       lifecycleRules: [
         {
           id: "RetainPostgresBackups",
@@ -127,11 +124,6 @@ export class ClosetHopDevStack extends Stack {
         StringEquals: { "aws:SourceAccount": this.account }
       }
     }));
-    imageBucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      new s3Notifications.SqsDestination(processingQueue),
-      { prefix: "users/" }
-    );
 
     const googleSecret = secretsmanager.Secret.fromSecretNameV2(
       this,
@@ -348,6 +340,7 @@ export class ClosetHopDevStack extends Stack {
       value: `${userPoolDomain.baseUrl()}/oauth2/idpresponse`
     });
     new CfnOutput(this, "ProcessingQueueUrl", { value: processingQueue.queueUrl });
+    new CfnOutput(this, "ManualS3NotificationPrefix", { value: "users/" });
     if (alertTopic) {
       new CfnOutput(this, "AlertTopicArn", { value: alertTopic.topicArn });
     }

@@ -49,10 +49,6 @@ public class ClothingItem {
     @Column(name = "processing_error")
     private String processingError;
 
-    @Column(name = "processing_attempt", nullable = false, columnDefinition = "integer default 1")
-    @Builder.Default
-    private int processingAttempt = 1;
-
     @Column(name = "processing_deadline_at")
     private LocalDateTime processingDeadlineAt;
 

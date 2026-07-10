@@ -48,7 +48,7 @@ export function OutfitForm({
     setSelected(outfit?.items.map((item) => item.id) ?? []);
   }, [outfit]);
 
-  const wardrobeItems = (clothing.data?.content ?? []).filter((item) => item.status === "READY");
+  const wardrobeItems = (clothing.data?.content ?? []).filter((item) => item.processingState === "READY");
   const retainedOutfitItems = (outfit?.items ?? []).filter(
     (item) => !wardrobeItems.some((wardrobeItem) => wardrobeItem.id === item.id)
   );
@@ -193,7 +193,7 @@ export function OutfitForm({
               {selectedItems.map((item) => (
                 <div key={item.id} className="relative aspect-[4/5] overflow-hidden rounded-xl border border-stone bg-white">
                   <img className="h-full w-full object-contain p-2" src={item.imageUrl ?? ""} alt={item.category?.toLowerCase() ?? "clothing"} />
-                  {item.removedFromWardrobe && (
+                  {"removedFromWardrobe" in item && item.removedFromWardrobe && (
                     <span
                       title="Item removed from wardrobe"
                       className="absolute bottom-2 left-2 rounded-full bg-ink px-2 py-1 text-[10px] font-semibold text-white"

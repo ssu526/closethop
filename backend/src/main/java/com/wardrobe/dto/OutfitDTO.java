@@ -13,7 +13,7 @@ public class OutfitDTO {
     @Builder
     public static class CreateRequest {
         @NotEmpty(message = "At least one clothing item is required")
-        @Size(max = 20, message = "An outfit can contain at most 20 clothing items")
+        @Size(max = 20, message = "An outfit can contain at most 20 items")
         private Set<UUID> clothingItemIds = new HashSet<>();
     }
 
@@ -22,7 +22,7 @@ public class OutfitDTO {
     @AllArgsConstructor
     @Builder
     public static class UpdateRequest {
-        @Size(max = 20, message = "An outfit can contain at most 20 clothing items")
+        @Size(max = 20, message = "An outfit can contain at most 20 items")
         private Set<UUID> clothingItemIds;
     }
 
@@ -45,7 +45,7 @@ public class OutfitDTO {
     @Builder
     public static class CreateCommunitySuggestionRequest {
         @NotEmpty(message = "At least one clothing item is required")
-        @Size(max = 20, message = "An outfit can contain at most 20 clothing items")
+        @Size(max = 20, message = "An outfit can contain at most 20 items")
         private Set<UUID> clothingItemIds = new HashSet<>();
     }
 
@@ -63,7 +63,7 @@ public class OutfitDTO {
     @Builder
     public static class Response {
         private UUID id;
-        private Set<ClothingItemDTO.Response> items;
+        private Set<ClothingItemDTO.OutfitItem> items;
         private UUID userId;
         private SuggestedBySummary suggestedBy;
         private LocalDateTime acceptedAt;

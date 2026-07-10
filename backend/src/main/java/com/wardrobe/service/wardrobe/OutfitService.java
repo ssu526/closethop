@@ -13,7 +13,6 @@ import com.wardrobe.repository.ClothingItemRepository;
 import com.wardrobe.repository.OutfitRepository;
 import com.wardrobe.repository.UserRepository;
 import com.wardrobe.service.ai.OutfitSuggestionAiService;
-import com.wardrobe.service.aws.ImageAccessService;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,7 +37,7 @@ public class OutfitService {
     private final ClothingItemRepository clothingRepository;
     private final UserRepository userRepository;
     private final OutfitSuggestionAiService outfitSuggestionAiService;
-    private final ImageAccessService imageAccess;
+    private final ClothingItemViewMapper clothingItemViewMapper;
 
     @Transactional
     public OutfitDTO.Response createOutfit(OutfitDTO.CreateRequest request, User user) {
@@ -147,7 +146,7 @@ public class OutfitService {
     }
 
     @Transactional(readOnly = true)
-    public List<ClothingItemDTO.Response> suggestItems(OutfitDTO.AiOutfitSuggestionRequest request, User user) {
+    public List<ClothingItemDTO.ClothingItemDetail> suggestItems(OutfitDTO.AiOutfitSuggestionRequest request, User user) {
         Set<ClothingItem> selectedItems = new HashSet<>();
         for (UUID itemId : request.getClothingItemIds()) {
             ClothingItem item = clothingRepository.findById(itemId)
@@ -183,7 +182,7 @@ public class OutfitService {
         return outfitSuggestionAiService.select(
                         List.copyOf(selectedItems), candidates, category.toString()).stream()
                 .map(candidatesById::get)
-                .map(this::mapItemToResponse)
+                .map(clothingItemViewMapper::toDetail)
                 .toList();
     }
 
@@ -261,8 +260,8 @@ public class OutfitService {
     }
 
     private OutfitDTO.Response mapToResponse(Outfit outfit) {
-        Set<ClothingItemDTO.Response> itemResponses = outfit.getItems().stream()
-                .map(this::mapItemToResponse)
+        Set<ClothingItemDTO.OutfitItem> itemResponses = outfit.getItems().stream()
+                .map(clothingItemViewMapper::toOutfitItem)
                 .collect(Collectors.toSet());
 
         return OutfitDTO.Response.builder()
@@ -278,17 +277,4 @@ public class OutfitService {
                 .build();
     }
 
-    private ClothingItemDTO.Response mapItemToResponse(ClothingItem item) {
-        return ClothingItemDTO.Response.builder()
-                .id(item.getId())
-                .category(item.getCategory().toString())
-                .imageUrl(imageAccess.urlFor(item))
-                .tags(new java.util.LinkedHashSet<>(item.getTags()))
-                .status(item.getStatus().toString())
-                .removedFromWardrobe(item.getRemovedAt() != null)
-                .userId(item.getUser().getId())
-                .createdAt(item.getCreatedAt())
-                .updatedAt(item.getUpdatedAt())
-                .build();
-    }
 }

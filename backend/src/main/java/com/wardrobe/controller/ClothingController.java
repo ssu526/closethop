@@ -34,7 +34,7 @@ public class ClothingController {
     }
 
     @GetMapping
-    public ResponseEntity<Page<ClothingItemDTO.Summary>> getUserItems(
+    public ResponseEntity<Page<ClothingItemDTO.WardrobeListItem>> getUserItems(
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         User user = currentUserService.getCurrentUser();
@@ -42,7 +42,7 @@ public class ClothingController {
     }
 
     @GetMapping("/category/{category}")
-    public ResponseEntity<Page<ClothingItemDTO.Summary>> getItemsByCategory(
+    public ResponseEntity<Page<ClothingItemDTO.WardrobeListItem>> getItemsByCategory(
             @PathVariable String category,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
@@ -51,13 +51,13 @@ public class ClothingController {
     }
 
     @GetMapping("/{itemId}")
-    public ResponseEntity<ClothingItemDTO.Response> getClothingItem(@PathVariable UUID itemId) {
+    public ResponseEntity<ClothingItemDTO.ClothingItemDetail> getClothingItem(@PathVariable UUID itemId) {
         User user = currentUserService.getCurrentUser();
         return ResponseEntity.ok(clothingService.getClothingItem(itemId, user));
     }
 
     @PutMapping("/{itemId}")
-    public ResponseEntity<ClothingItemDTO.Response> updateClothingItem(
+    public ResponseEntity<ClothingItemDTO.ClothingItemDetail> updateClothingItem(
             @PathVariable UUID itemId,
             @Valid @RequestBody ClothingItemDTO.UpdateRequest request) {
         User user = currentUserService.getCurrentUser();
@@ -65,9 +65,17 @@ public class ClothingController {
     }
 
     @PostMapping("/{itemId}/upload-failed")
-    public ResponseEntity<ClothingItemDTO.Response> markUploadFailed(@PathVariable UUID itemId) {
+    public ResponseEntity<ClothingItemDTO.ClothingItemDetail> markUploadFailed(@PathVariable UUID itemId) {
         User user = currentUserService.getCurrentUser();
         return ResponseEntity.ok(clothingService.markUploadFailed(itemId, user));
+    }
+
+    @PostMapping("/{itemId}/retry-upload-url")
+    public ResponseEntity<ClothingItemDTO.UploadUrlResponse> retryUploadUrl(
+            @PathVariable UUID itemId,
+            @Valid @RequestBody ClothingItemDTO.RetryUploadUrlRequest request) {
+        User user = currentUserService.getCurrentUser();
+        return ResponseEntity.ok(clothingService.retryUploadUrl(itemId, request, user));
     }
 
     @DeleteMapping("/{itemId}")
@@ -78,7 +86,7 @@ public class ClothingController {
     }
 
     @GetMapping("/search")
-    public ResponseEntity<Page<ClothingItemDTO.Summary>> searchItems(
+    public ResponseEntity<Page<ClothingItemDTO.WardrobeListItem>> searchItems(
             @RequestParam @Size(max = 100) String query,
             @RequestParam(required = false) String category,
             @RequestParam(defaultValue = "0") @Min(0) int page,

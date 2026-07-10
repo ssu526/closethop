@@ -47,7 +47,7 @@ public class UserController {
     }
 
     @GetMapping("/{userId}/clothing")
-    public ResponseEntity<Page<ClothingItemDTO.Summary>> publicWardrobe(
+    public ResponseEntity<Page<ClothingItemDTO.WardrobeListItem>> publicWardrobe(
             @PathVariable UUID userId,
             @RequestParam(required = false) @Size(max = 100) String query,
             @RequestParam(required = false) String category,

@@ -26,8 +26,15 @@ public class ClothingItemDTO {
         private String category;
         @NotBlank(message = "Content type is required")
         private String contentType;
-        @Size(max = 20, message = "A clothing item can have at most 20 tags")
-        private Set<@Size(max = 30, message = "Tags must be 30 characters or fewer") String> tags;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class RetryUploadUrlRequest {
+        @NotBlank(message = "Content type is required")
+        private String contentType;
     }
 
     @Data
@@ -37,56 +44,45 @@ public class ClothingItemDTO {
     public static class UploadUrlResponse {
         private UUID itemId;
         private String uploadUrl;
-        private String originalS3Key;
         private LocalDateTime expiresAt;
-        private Response item;
     }
 
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
-    public static class Response {
+    public static class ClothingItemDetail {
         private UUID id;
         private String category;
         private String imageUrl;
         private Set<String> tags;
-        private String status;
-        private String processingError;
-        private boolean removedFromWardrobe;
-        private UUID duplicateOfId;
-        private UUID userId;
-        private LocalDateTime createdAt;
-        private LocalDateTime updatedAt;
+        private String processingState;
+        private String failureReason;
+        private String displayNote;
     }
 
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
-    public static class Summary {
+    public static class WardrobeListItem {
         private UUID id;
         private String category;
         private String imageUrl;
-        private String status;
-        private String processingError;
-        private boolean removedFromWardrobe;
-        private UUID duplicateOfId;
-        private UUID userId;
-        private LocalDateTime createdAt;
-        private LocalDateTime updatedAt;
+        private String processingState;
+        private String failureReason;
+        private String displayNote;
     }
 
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
-    public static class SearchRequest {
-        @Size(max = 100)
-        private String query;
+    public static class OutfitItem {
+        private UUID id;
         private String category;
-        private List<String> tags;
-        private int page = 0;
-        private int size = 20;
+        private String imageUrl;
+        private boolean removedFromWardrobe;
     }
+
 }

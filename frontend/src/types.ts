@@ -10,36 +10,37 @@ export const categories = [
 
 export type Category = (typeof categories)[number];
 
-export interface ClothingItem {
+export type ProcessingState =
+  | "WAITING_FOR_UPLOAD"
+  | "PROCESSING"
+  | "READY"
+  | "FAILED";
+
+export type FailureReason = "UPLOAD" | "PROCESSING" | "DUPLICATE";
+
+export interface WardrobeListItem {
   id: string;
   category: Category | null;
   imageUrl: string | null;
-  tags: string[];
-  status:
-    | "WAITING_FOR_UPLOAD"
-    | "PROCESSING"
-    | "READY"
-    | "DUPLICATE_REJECTED"
-    | "FAILED";
-  processingError?: string | null;
-  duplicateOfId?: string | null;
-  removedFromWardrobe: boolean;
-  subcategory?: string | null;
-  colors: string[];
-  pattern?: string | null;
-  materials: string[];
-  seasons: string[];
-  occasions: string[];
-  userId: string;
-  createdAt: string;
-  updatedAt: string;
+  processingState: ProcessingState;
+  failureReason?: FailureReason | null;
+  displayNote?: string | null;
 }
 
-export type ClothingItemSummary = Omit<ClothingItem, "tags">;
+export interface ClothingItemDetail extends WardrobeListItem {
+  tags: string[];
+}
+
+export interface OutfitItem {
+  id: string;
+  category: Category | null;
+  imageUrl: string | null;
+  removedFromWardrobe: boolean;
+}
 
 export interface Outfit {
   id: string;
-  items: ClothingItem[];
+  items: OutfitItem[];
   userId: string;
   suggestedBy: {
     id: string;

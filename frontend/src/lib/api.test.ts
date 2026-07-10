@@ -93,29 +93,17 @@ describe("API client", () => {
       id: "1",
       category: "TOPS",
       imageUrl: "https://images.example/users/user-1/original/1.jpg",
-      status: "PROCESSING",
-      processingError: null,
-      duplicateOfId: null,
-      removedFromWardrobe: false,
-      subcategory: null,
-      colors: [],
-      pattern: null,
-      materials: [],
-      seasons: [],
-      occasions: [],
-      userId: "user-1",
+      processingState: "PROCESSING",
+      failureReason: null,
+      displayNote: null,
       tags: [],
-      createdAt: "2026-07-08T16:00:00",
-      updatedAt: "2026-07-08T16:00:00"
     };
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
         new Response(JSON.stringify({
           itemId: "1",
           uploadUrl: "https://s3.example/upload",
-          originalS3Key: "users/user-1/original/1.jpg",
-          expiresAt: "2026-07-08T16:00:00",
-          item: { id: "1", status: "WAITING_FOR_UPLOAD" }
+          expiresAt: "2026-07-08T16:00:00"
         }), { status: 201, headers: { "Content-Type": "application/json" } })
       )
       .mockResolvedValueOnce(new Response(null, { status: 200 }))

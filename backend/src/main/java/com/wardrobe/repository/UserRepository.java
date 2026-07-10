@@ -32,6 +32,4 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     List<User> findExploreUsers(
             @Param("visibility") Enums.Visibility visibility,
             @Param("excludedUserId") UUID excludedUserId);
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    Optional<User> findAndLockById(UUID id);
 }
