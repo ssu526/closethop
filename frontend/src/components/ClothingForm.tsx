@@ -40,10 +40,13 @@ export function ClothingForm({
       tags: item?.tags.join(", ") ?? ""
     }
   });
-  useEffect(() => reset({
-    category: item?.category ?? initialCategory ?? "",
-    tags: item?.tags.join(", ") ?? ""
-  }), [initialCategory, item, reset]);
+  useEffect(() => {
+    if (isCreate) return;
+    reset({
+      category: item?.category ?? "",
+      tags: item?.tags.join(", ") ?? ""
+    });
+  }, [isCreate, item, reset]);
   const image = showImage ? watch("image")?.[0] : undefined;
   const category = watch("category");
   const preview = useMemo(() => image ? URL.createObjectURL(image) : undefined, [image]);

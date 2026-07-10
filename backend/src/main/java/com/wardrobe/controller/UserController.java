@@ -41,6 +41,13 @@ public class UserController {
         return ResponseEntity.ok(userService.updateVisibility(user, request.getVisibility()));
     }
 
+    @PutMapping("/me/profile-name")
+    public ResponseEntity<UserDTO.Response> updateProfileName(
+            @Valid @RequestBody UserDTO.ProfileNameRequest request) {
+        User user = currentUserService.getCurrentUser();
+        return ResponseEntity.ok(userService.updateProfileName(user, request.getProfileName()));
+    }
+
     @GetMapping("/public")
     public ResponseEntity<List<UserDTO.ExploreResponse>> publicUsers() {
         return ResponseEntity.ok(userService.getPublicUsers(currentUserService.getCurrentUser()));

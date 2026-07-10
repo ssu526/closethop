@@ -1,6 +1,7 @@
 package com.wardrobe.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -35,5 +36,14 @@ public class UserDTO {
     public static class VisibilityRequest {
         @NotBlank
         private String visibility;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ProfileNameRequest {
+        @NotBlank
+        @Size(max = 100)
+        private String profileName;
     }
 }

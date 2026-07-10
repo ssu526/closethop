@@ -79,6 +79,11 @@ export const api = {
     }),
   users: {
     me: () => request<UserProfile>("/api/users/me"),
+    updateProfileName: (profileName: string) =>
+      request<UserProfile>("/api/users/me/profile-name", {
+        method: "PUT",
+        body: JSON.stringify({ profileName })
+      }),
     setVisibility: (visibility: "PRIVATE" | "PUBLIC") =>
       request<UserProfile>("/api/users/me/visibility", {
         method: "PUT",

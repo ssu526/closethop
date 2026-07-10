@@ -49,6 +49,16 @@ public class UserService {
         return toResponse(userRepository.save(user));
     }
 
+    @Transactional
+    public UserDTO.Response updateProfileName(User user, String profileName) {
+        String normalized = profileName == null ? "" : profileName.trim();
+        if (normalized.isBlank()) {
+            throw new ValidationException("Profile name is required");
+        }
+        user.setUsername(normalized);
+        return toResponse(userRepository.save(user));
+    }
+
     @Transactional(readOnly = true)
     public List<UserDTO.ExploreResponse> getPublicUsers(User currentUser) {
         return userRepository.findExploreUsers(Enums.Visibility.PUBLIC, currentUser.getId())

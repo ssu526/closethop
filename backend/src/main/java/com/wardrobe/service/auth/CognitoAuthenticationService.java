@@ -49,18 +49,31 @@ public class CognitoAuthenticationService implements CurrentUserService {
         if (email != null) {
             user.setEmail(email);
         }
-        user.setUsername(resolveUsername(jwt));
+        String username = resolveUsername(jwt);
+        if (!isProviderGeneratedUsername(username) || isProviderGeneratedUsername(user.getUsername())) {
+            user.setUsername(username);
+        }
         return user;
     }
 
     private String resolveUsername(Jwt jwt) {
-        for (String claim : new String[]{"preferred_username", "name", "username", "cognito:username"}) {
+        for (String claim : new String[]{"preferred_username", "name", "username"}) {
             String value = jwt.getClaimAsString(claim);
             if (value != null && !value.isBlank()) {
                 return value;
             }
         }
         String email = jwt.getClaimAsString("email");
-        return email != null ? email : jwt.getSubject();
+        if (email != null && !email.isBlank()) {
+            return email.split("@", 2)[0];
+        }
+        String cognitoUsername = jwt.getClaimAsString("cognito:username");
+        return cognitoUsername != null && !cognitoUsername.isBlank()
+                ? cognitoUsername
+                : jwt.getSubject();
+    }
+
+    private boolean isProviderGeneratedUsername(String username) {
+        return username != null && username.matches("(?i)google_[a-z0-9_-]+");
     }
 }

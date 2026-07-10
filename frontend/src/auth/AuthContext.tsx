@@ -4,6 +4,7 @@ import {
   confirmSignIn,
   confirmSignUp,
   fetchAuthSession,
+  fetchUserAttributes,
   getCurrentUser,
   signIn,
   signInWithRedirect,
@@ -36,6 +37,22 @@ interface AuthContextValue {
 
 const LOCAL_SESSION_KEY = "closethop.local.session";
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function firstPresent(...values: Array<string | undefined>) {
+  return values.map((value) => value?.trim()).find(Boolean);
+}
+
+function cognitoProfileName(
+  attributes: Awaited<ReturnType<typeof fetchUserAttributes>>,
+  fallback: string
+) {
+  const fullName = firstPresent(
+    attributes.name,
+    [attributes.given_name, attributes.family_name].filter(Boolean).join(" ")
+  );
+  const emailName = attributes.email?.split("@")[0];
+  return firstPresent(fullName, attributes.preferred_username, emailName, fallback) ?? fallback;
+}
 
 function configureCognito() {
   const userPoolId = import.meta.env.VITE_COGNITO_USER_POOL_ID;
@@ -100,7 +117,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       const current = await getCurrentUser();
-      setUser({ id: current.userId, username: current.username });
+      const attributes = await fetchUserAttributes();
+      const profileName = cognitoProfileName(attributes, current.username);
+      const profile = await api.users.updateProfileName(profileName);
+      setUser({ id: current.userId, username: profile.username });
     } catch {
       setUser(null);
     }
