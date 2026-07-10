@@ -61,6 +61,7 @@ describe("AuthProvider Cognito auth", () => {
     authMocks.resendSignUpCode.mockResolvedValue(undefined);
     authMocks.signIn.mockResolvedValue({ isSignedIn: false, nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_EMAIL_CODE" } });
     authMocks.signInWithRedirect.mockResolvedValue(undefined);
+    authMocks.signOut.mockResolvedValue(undefined);
     authMocks.signUp.mockResolvedValue({
       isSignUpComplete: false,
       nextStep: { signUpStep: "CONFIRM_SIGN_UP" },
@@ -83,6 +84,7 @@ describe("AuthProvider Cognito auth", () => {
 
     authMocks.getCurrentUser
       .mockRejectedValueOnce(new Error("not signed in"))
+      .mockResolvedValueOnce({ userId: "user-1", username: "google_123" })
       .mockResolvedValueOnce({ userId: "user-1", username: "google_123" });
     authMocks.signInWithRedirect.mockRejectedValueOnce(new Error("There is already a signed in user."));
 
@@ -101,6 +103,31 @@ describe("AuthProvider Cognito auth", () => {
       expect(screen.getByText("sue")).toBeInTheDocument();
     });
     expect(api.users.updateProfileName).toHaveBeenCalledWith("sue");
+  });
+
+  it("normalizes the hosted UI domain before configuring Amplify", async () => {
+    vi.stubEnv("VITE_COGNITO_DOMAIN", "https://closethop.auth.us-east-1.amazoncognito.com/");
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    expect(amplifyMocks.configure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        Auth: expect.objectContaining({
+          Cognito: expect.objectContaining({
+            loginWith: expect.objectContaining({
+              oauth: expect.objectContaining({
+                domain: "closethop.auth.us-east-1.amazoncognito.com"
+              })
+            })
+          })
+        })
+      })
+    );
   });
 
   it("starts sign-up confirmation for a new email OTP user", async () => {
@@ -127,6 +154,31 @@ describe("AuthProvider Cognito auth", () => {
       }
     });
     expect(authMocks.signIn).not.toHaveBeenCalled();
+  });
+
+  it("clears an existing Cognito session before starting email OTP", async () => {
+    const user = userEvent.setup();
+
+    authMocks.getCurrentUser
+      .mockRejectedValueOnce(new Error("not signed in"))
+      .mockResolvedValueOnce({ userId: "user-1", username: "sue@example.com" });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(authMocks.signOut).toHaveBeenCalled();
+    });
+    expect(authMocks.signOut.mock.invocationCallOrder[0]).toBeLessThan(
+      authMocks.signUp.mock.invocationCallOrder[0]
+    );
   });
 
   it("falls back to sign-in OTP when the email already has an account", async () => {

@@ -55,6 +55,21 @@ export function AuthPage({ register = false }: { register?: boolean }) {
     }
   }
 
+  async function startGoogleSignIn() {
+    setBusy(true);
+    setError("");
+    try {
+      await auth.signInWithGoogle();
+      if (auth.user) navigate(destination);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Something went wrong.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="flex min-h-screen flex-col bg-paper">
       <header className="flex h-20 items-center border-b border-stone/60 px-6 sm:px-10">
@@ -87,7 +102,7 @@ export function AuthPage({ register = false }: { register?: boolean }) {
                 className="w-full !rounded-xl"
                 variant="secondary"
                 disabled={busy}
-                onClick={() => run(auth.signInWithGoogle)}
+                onClick={() => void startGoogleSignIn()}
               >
                 Continue with Google
               </Button>

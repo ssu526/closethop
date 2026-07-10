@@ -50,6 +50,10 @@ function isAlreadySignedInUserError(reason: unknown) {
   return reason instanceof Error && reason.message === ALREADY_SIGNED_IN_MESSAGE;
 }
 
+function normalizeCognitoDomain(domain: string) {
+  return domain.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
 function isErrorNamed(reason: unknown, name: string) {
   return reason instanceof Error && reason.name === name;
 }
@@ -80,7 +84,7 @@ function configureCognito() {
         userPoolClientId,
         loginWith: {
           oauth: {
-            domain,
+            domain: normalizeCognitoDomain(domain),
             scopes: ["openid", "email", "profile"],
             redirectSignIn: [
               import.meta.env.VITE_COGNITO_REDIRECT_SIGN_IN ?? "http://localhost:3000/auth/callback"
@@ -120,6 +124,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     sessionStorage.removeItem(LOCAL_SESSION_KEY);
     setUser(null);
   }, []);
+
+  const clearCognitoSessionForNewSignIn = useCallback(async () => {
+    if (mode !== "cognito") return;
+    try {
+      await getCurrentUser();
+      await signOut();
+    } catch {
+      // No active Cognito session to clear.
+    }
+    clearSession();
+    setOtpPending(false);
+  }, [clearSession, mode]);
 
   const refresh = useCallback(async () => {
     if (mode === "local") {
@@ -206,6 +222,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const requestEmailOtp = async (email: string) => {
     if (mode !== "cognito") throw new Error("Email OTP is only available in Cognito mode.");
     const normalizedEmail = email.trim();
+    await clearCognitoSessionForNewSignIn();
     setOtpEmail(normalizedEmail);
     try {
       await beginNewUserEmailOtp(normalizedEmail);
@@ -244,6 +261,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       confirmEmailOtp,
       signInWithGoogle: async () => {
         if (mode !== "cognito") throw new Error("Google sign-in is only available in Cognito mode.");
+        await clearCognitoSessionForNewSignIn();
         try {
           await signInWithRedirect({ provider: "Google" });
         } catch (reason) {
@@ -257,7 +275,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       refresh
     }),
-    [loading, mode, otpPending, user, refresh, clearSession]
+    [clearCognitoSessionForNewSignIn, loading, mode, otpPending, user, refresh, clearSession]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -27,7 +27,22 @@ describe("AuthPage Google sign-in", () => {
     vi.restoreAllMocks();
   });
 
-  it("redirects to the protected destination after Google sign-in resolves", async () => {
+  it("starts Google sign-in without navigating before the Hosted UI callback", async () => {
+    const signInWithGoogle = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(authModule, "useAuth").mockReturnValue({
+      mode: "cognito",
+      user: null,
+      loading: false,
+      otpPending: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      requestEmailOtp: vi.fn(),
+      confirmEmailOtp: vi.fn(),
+      signInWithGoogle,
+      logout: vi.fn(),
+      refresh: vi.fn(),
+    });
+
     render(
       <MemoryRouter initialEntries={[{ pathname: "/login", state: { from: { pathname: "/outfits" } } }]}>
         <Routes>
@@ -40,8 +55,9 @@ describe("AuthPage Google sign-in", () => {
     await userEvent.click(screen.getByRole("button", { name: /continue with google/i }));
 
     await waitFor(() => {
-      expect(screen.getByText("Outfits destination")).toBeInTheDocument();
+      expect(signInWithGoogle).toHaveBeenCalled();
     });
+    expect(screen.queryByText("Outfits destination")).not.toBeInTheDocument();
   });
 
   it("shows auth errors when Google sign-in fails for another reason", async () => {
