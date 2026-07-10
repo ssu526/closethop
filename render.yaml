@@ -48,7 +48,7 @@ services:
     runtime: docker
     name: closethop-worker
     region: virginia
-    plan: free
+    plan: starter
     numInstances: 1
     dockerContext: .
     dockerfilePath: ./worker/Dockerfile
