@@ -89,4 +89,38 @@ describe("AuthPage Google sign-in", () => {
     expect(await screen.findByText("OAuth failed")).toBeInTheDocument();
     expect(screen.queryByText("Wardrobe destination")).not.toBeInTheDocument();
   });
+
+  it("requests an email OTP without navigating away from login", async () => {
+    const requestEmailOtp = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(authModule, "useAuth").mockReturnValue({
+      mode: "cognito",
+      user: null,
+      loading: false,
+      otpPending: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      requestEmailOtp,
+      confirmEmailOtp: vi.fn(),
+      signInWithGoogle: vi.fn(),
+      logout: vi.fn(),
+      refresh: vi.fn(),
+    });
+
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/login", state: { from: { pathname: "/wardrobe" } } }]}>
+        <Routes>
+          <Route path="/login" element={<AuthPage />} />
+          <Route path="/wardrobe" element={<div>Wardrobe destination</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.type(screen.getByLabelText(/email address/i), "sue@example.com");
+    await userEvent.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(requestEmailOtp).toHaveBeenCalledWith("sue@example.com");
+    });
+    expect(screen.queryByText("Wardrobe destination")).not.toBeInTheDocument();
+  });
 });

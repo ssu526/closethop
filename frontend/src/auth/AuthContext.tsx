@@ -125,18 +125,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }, []);
 
-  const clearCognitoSessionForNewSignIn = useCallback(async () => {
-    if (mode !== "cognito") return;
-    try {
-      await getCurrentUser();
-      await signOut();
-    } catch {
-      // No active Cognito session to clear.
-    }
-    clearSession();
-    setOtpPending(false);
-  }, [clearSession, mode]);
-
   const refresh = useCallback(async () => {
     if (mode === "local") {
       const stored = sessionStorage.getItem(LOCAL_SESSION_KEY);
@@ -222,13 +210,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const requestEmailOtp = async (email: string) => {
     if (mode !== "cognito") throw new Error("Email OTP is only available in Cognito mode.");
     const normalizedEmail = email.trim();
-    await clearCognitoSessionForNewSignIn();
     setOtpEmail(normalizedEmail);
-    try {
+    const startEmailOtp = async () => {
       await beginNewUserEmailOtp(normalizedEmail);
+    };
+
+    try {
+      await startEmailOtp();
     } catch (reason) {
-      if (!isErrorNamed(reason, USERNAME_EXISTS_ERROR)) throw reason;
-      await beginExistingUserEmailOtp(normalizedEmail);
+      if (isErrorNamed(reason, USERNAME_EXISTS_ERROR)) {
+        await beginExistingUserEmailOtp(normalizedEmail);
+        return;
+      }
+      if (!isAlreadySignedInUserError(reason)) throw reason;
+      await signOut();
+      clearSession();
+      setOtpPending(false);
+      try {
+        await startEmailOtp();
+      } catch (retryReason) {
+        if (!isErrorNamed(retryReason, USERNAME_EXISTS_ERROR)) throw retryReason;
+        await beginExistingUserEmailOtp(normalizedEmail);
+      }
     }
   };
 
@@ -274,7 +277,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       refresh
     }),
-    [clearCognitoSessionForNewSignIn, loading, mode, otpPending, user, refresh, clearSession]
+    [loading, mode, otpPending, user, refresh, clearSession]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

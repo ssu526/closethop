@@ -174,12 +174,8 @@ describe("AuthProvider Cognito auth", () => {
     expect(authMocks.signIn).not.toHaveBeenCalled();
   });
 
-  it("clears an existing Cognito session before starting email OTP", async () => {
+  it("starts email OTP without signing out first", async () => {
     const user = userEvent.setup();
-
-    authMocks.getCurrentUser
-      .mockRejectedValueOnce(new Error("not signed in"))
-      .mockResolvedValueOnce({ userId: "user-1", username: "sue@example.com" });
 
     render(
       <AuthProvider>
@@ -192,11 +188,37 @@ describe("AuthProvider Cognito auth", () => {
     await user.click(screen.getByRole("button", { name: /email me a code/i }));
 
     await waitFor(() => {
-      expect(authMocks.signOut).toHaveBeenCalled();
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
     });
-    expect(authMocks.signOut.mock.invocationCallOrder[0]).toBeLessThan(
-      authMocks.signUp.mock.invocationCallOrder[0]
+    expect(authMocks.signOut).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale Cognito session and retries email OTP when Amplify reports an existing signed-in user", async () => {
+    const user = userEvent.setup();
+
+    authMocks.signUp
+      .mockRejectedValueOnce(new Error("There is already a signed in user."))
+      .mockResolvedValueOnce({
+        isSignUpComplete: false,
+        nextStep: { signUpStep: "CONFIRM_SIGN_UP" },
+        userId: "user-1"
+      });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
     );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+    expect(authMocks.signOut).toHaveBeenCalled();
+    expect(authMocks.signUp).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to sign-in OTP when the email already has an account", async () => {

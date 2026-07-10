@@ -70,6 +70,20 @@ export function AuthPage({ register = false }: { register?: boolean }) {
     }
   }
 
+  async function requestOtpCode() {
+    setBusy(true);
+    setError("");
+    try {
+      await auth.requestEmailOtp(email);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Something went wrong.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="flex min-h-screen flex-col bg-paper">
       <header className="flex h-20 items-center border-b border-stone/60 px-6 sm:px-10">
@@ -146,7 +160,7 @@ export function AuthPage({ register = false }: { register?: boolean }) {
                   <Button
                     className="w-full !rounded-xl"
                     disabled={busy || !email}
-                    onClick={() => run(() => auth.requestEmailOtp(email))}
+                    onClick={() => void requestOtpCode()}
                   >
                     <Mail size={17} /> Email me a code
                   </Button>
