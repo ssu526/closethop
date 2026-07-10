@@ -40,6 +40,7 @@ const LOCAL_SESSION_KEY = "closethop.local.session";
 const AuthContext = createContext<AuthContextValue | null>(null);
 const ALREADY_SIGNED_IN_MESSAGE = "There is already a signed in user.";
 const USERNAME_EXISTS_ERROR = "UsernameExistsException";
+const USER_NOT_FOUND_ERROR = "UserNotFoundException";
 const CONFIRM_SIGN_UP_STEP = "CONFIRM_SIGN_UP";
 const SELECT_FIRST_FACTOR_STEP = "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION";
 const EMAIL_OTP_CHALLENGE = "EMAIL_OTP";
@@ -93,6 +94,10 @@ function isAlreadySignedInUserError(reason: unknown) {
 
 function isUsernameExistsError(reason: unknown) {
   return hasCognitoErrorName(reason, USERNAME_EXISTS_ERROR);
+}
+
+function isUserNotFoundError(reason: unknown) {
+  return hasCognitoErrorName(reason, USER_NOT_FOUND_ERROR);
 }
 
 function stringClaim(value: unknown) {
@@ -284,10 +289,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setOtpEmail(normalizedEmail);
     const startEmailOtp = async () => {
       try {
-        await beginNewUserEmailOtp(normalizedEmail);
-      } catch (reason) {
-        if (!isUsernameExistsError(reason)) throw reason;
         await beginExistingUserEmailOtp(normalizedEmail);
+      } catch (reason) {
+        if (!isUserNotFoundError(reason)) throw reason;
+        try {
+          await beginNewUserEmailOtp(normalizedEmail);
+        } catch (signUpReason) {
+          if (!isUsernameExistsError(signUpReason)) throw signUpReason;
+          await beginExistingUserEmailOtp(normalizedEmail);
+        }
       }
     };
 

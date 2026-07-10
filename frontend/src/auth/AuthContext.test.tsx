@@ -173,6 +173,8 @@ describe("AuthProvider Cognito auth", () => {
   it("starts sign-up confirmation for a new email OTP user", async () => {
     const user = userEvent.setup();
 
+    authMocks.signIn.mockRejectedValueOnce(Object.assign(new Error("not found"), { name: "UserNotFoundException" }));
+
     render(
       <AuthProvider>
         <AuthHarness />
@@ -193,7 +195,6 @@ describe("AuthProvider Cognito auth", () => {
         autoSignIn: { authFlowType: "USER_AUTH" }
       }
     });
-    expect(authMocks.signIn).not.toHaveBeenCalled();
   });
 
   it("starts email OTP without signing out first", async () => {
@@ -218,12 +219,11 @@ describe("AuthProvider Cognito auth", () => {
   it("clears a stale Cognito session and retries email OTP when Amplify reports an existing signed-in user", async () => {
     const user = userEvent.setup();
 
-    authMocks.signUp
+    authMocks.signIn
       .mockRejectedValueOnce(new Error("There is already a signed in user."))
       .mockResolvedValueOnce({
-        isSignUpComplete: false,
-        nextStep: { signUpStep: "CONFIRM_SIGN_UP" },
-        userId: "user-1"
+        isSignedIn: false,
+        nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_EMAIL_CODE" }
       });
 
     render(
@@ -240,18 +240,17 @@ describe("AuthProvider Cognito auth", () => {
       expect(screen.getByText("otp-pending")).toBeInTheDocument();
     });
     expect(authMocks.signOut).toHaveBeenCalled();
-    expect(authMocks.signUp).toHaveBeenCalledTimes(2);
+    expect(authMocks.signIn).toHaveBeenCalledTimes(2);
   });
 
   it("clears a stale Cognito session and retries email OTP when Amplify returns a plain object error", async () => {
     const user = userEvent.setup();
 
-    authMocks.signUp
+    authMocks.signIn
       .mockRejectedValueOnce({ message: "There is already a signed in user." })
       .mockResolvedValueOnce({
-        isSignUpComplete: false,
-        nextStep: { signUpStep: "CONFIRM_SIGN_UP" },
-        userId: "user-1"
+        isSignedIn: false,
+        nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_EMAIL_CODE" }
       });
 
     render(
@@ -268,13 +267,11 @@ describe("AuthProvider Cognito auth", () => {
       expect(screen.getByText("otp-pending")).toBeInTheDocument();
     });
     expect(authMocks.signOut).toHaveBeenCalled();
-    expect(authMocks.signUp).toHaveBeenCalledTimes(2);
+    expect(authMocks.signIn).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back to sign-in OTP when the email already has an account", async () => {
+  it("starts sign-in OTP first when the email already has an account", async () => {
     const user = userEvent.setup();
-
-    authMocks.signUp.mockRejectedValueOnce(Object.assign(new Error("exists"), { name: "UsernameExistsException" }));
 
     render(
       <AuthProvider>
@@ -293,11 +290,18 @@ describe("AuthProvider Cognito auth", () => {
       username: "sue@example.com",
       options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
     });
+    expect(authMocks.signUp).not.toHaveBeenCalled();
   });
 
-  it("falls back to sign-in OTP when Cognito returns a plain object username-exists error", async () => {
+  it("falls back to sign-in OTP when signup races with an existing account", async () => {
     const user = userEvent.setup();
 
+    authMocks.signIn
+      .mockRejectedValueOnce(Object.assign(new Error("not found"), { name: "UserNotFoundException" }))
+      .mockResolvedValueOnce({
+        isSignedIn: false,
+        nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_EMAIL_CODE" }
+      });
     authMocks.signUp.mockRejectedValueOnce({ __type: "UsernameExistsException", message: "User already exists" });
 
     render(
@@ -317,11 +321,18 @@ describe("AuthProvider Cognito auth", () => {
       username: "sue@example.com",
       options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
     });
+    expect(authMocks.signIn).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to sign-in OTP when Cognito returns a namespaced username-exists error", async () => {
     const user = userEvent.setup();
 
+    authMocks.signIn
+      .mockRejectedValueOnce(Object.assign(new Error("not found"), { name: "UserNotFoundException" }))
+      .mockResolvedValueOnce({
+        isSignedIn: false,
+        nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_EMAIL_CODE" }
+      });
     authMocks.signUp.mockRejectedValueOnce({
       __type: "com.amazonaws.cognitoidentityprovider#UsernameExistsException",
       message: "User already exists"
@@ -344,12 +355,12 @@ describe("AuthProvider Cognito auth", () => {
       username: "sue@example.com",
       options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
     });
+    expect(authMocks.signIn).toHaveBeenCalledTimes(2);
   });
 
   it("resends confirmation for an existing unconfirmed user", async () => {
     const user = userEvent.setup();
 
-    authMocks.signUp.mockRejectedValueOnce(Object.assign(new Error("exists"), { name: "UsernameExistsException" }));
     authMocks.signIn.mockResolvedValueOnce({
       isSignedIn: false,
       nextStep: { signInStep: "CONFIRM_SIGN_UP" }
@@ -374,7 +385,6 @@ describe("AuthProvider Cognito auth", () => {
   it("selects email OTP when Cognito asks for a first auth factor", async () => {
     const user = userEvent.setup();
 
-    authMocks.signUp.mockRejectedValueOnce(Object.assign(new Error("exists"), { name: "UsernameExistsException" }));
     authMocks.signIn.mockResolvedValueOnce({
       isSignedIn: false,
       nextStep: { signInStep: "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION" }
