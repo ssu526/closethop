@@ -51,9 +51,10 @@ public class ProcessingRecoveryService {
         if (item.getOriginalS3Key() != null && !item.getOriginalS3Key().isBlank()) {
             item.setProcessedS3Key(null);
             item.setImageHash(null);
-            item.setStatus(Enums.ProcessingStatus.FAILED);
+            item.setStatus(Enums.ProcessingStatus.READY);
             item.setProcessingError("PROCESSING_FAILED_USING_ORIGINAL");
             item.setProcessingDeadlineAt(null);
+            item.setProcessedAt(LocalDateTime.now());
             meterRegistry.counter("wardrobe.processing.fallbacks").increment();
             return;
         }

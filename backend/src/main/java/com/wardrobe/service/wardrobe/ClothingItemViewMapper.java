@@ -62,12 +62,15 @@ public class ClothingItemViewMapper {
     }
 
     private String toDisplayNote(ClothingItem item) {
-        if (item.getStatus() == Enums.ProcessingStatus.FAILED
-                && hasUsableOriginal(item)
-                && !isUploadFailure(item)) {
+        if (isOriginalFallback(item)) {
             return "Processing failed, using original image";
         }
         return null;
+    }
+
+    private boolean isOriginalFallback(ClothingItem item) {
+        return hasUsableOriginal(item)
+                && "PROCESSING_FAILED_USING_ORIGINAL".equals(item.getProcessingError());
     }
 
     private boolean hasUsableOriginal(ClothingItem item) {

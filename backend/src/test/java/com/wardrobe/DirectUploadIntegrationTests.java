@@ -199,7 +199,7 @@ class DirectUploadIntegrationTests {
     }
 
     @Test
-    void cleanupPromotesTimedOutProcessingItemToOriginalFallback() {
+    void cleanupPromotesTimedOutProcessingItemToReadyUsingOriginalFallback() {
         User user = users.save(User.builder()
                 .email("processing-timeout@example.com")
                 .username("processing-timeout")
@@ -217,11 +217,12 @@ class DirectUploadIntegrationTests {
 
         recoveryService.recoverTimedOutItems();
 
-        ClothingItem failed = items.findById(item.getId()).orElseThrow();
-        assertEquals(Enums.ProcessingStatus.FAILED, failed.getStatus());
-        assertEquals("PROCESSING_FAILED_USING_ORIGINAL", failed.getProcessingError());
-        assertEquals("users/%s/original/item.jpg".formatted(user.getId()), failed.getOriginalS3Key());
-        assertNull(failed.getProcessedS3Key());
+        ClothingItem recovered = items.findById(item.getId()).orElseThrow();
+        assertEquals(Enums.ProcessingStatus.READY, recovered.getStatus());
+        assertEquals("PROCESSING_FAILED_USING_ORIGINAL", recovered.getProcessingError());
+        assertEquals("users/%s/original/item.jpg".formatted(user.getId()), recovered.getOriginalS3Key());
+        assertNull(recovered.getProcessedS3Key());
+        assertNotNull(recovered.getProcessedAt());
     }
 
     @Test

@@ -54,6 +54,7 @@ WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "1"))
 SQS_MAX_MESSAGES = int(os.getenv("SQS_MAX_MESSAGES", "1"))
 SQS_WAIT_TIME_SECONDS = int(os.getenv("SQS_WAIT_TIME_SECONDS", "20"))
 SQS_VISIBILITY_TIMEOUT_SECONDS = int(os.getenv("SQS_VISIBILITY_TIMEOUT_SECONDS", "300"))
+PROCESSING_DEADLINE_SECONDS = int(os.getenv("PROCESSING_DEADLINE_SECONDS", "30"))
 GEMINI_RETRY_ATTEMPTS = int(os.getenv("GEMINI_RETRY_ATTEMPTS", "3"))
 PROCESSED_UPLOAD_RETRY_ATTEMPTS = int(os.getenv("PROCESSED_UPLOAD_RETRY_ATTEMPTS", "3"))
 CLASSIFICATION_PROMPT_PATH = Path(os.getenv(
@@ -399,7 +400,7 @@ def claim_job(job: dict) -> dict | None:
         SET processing_status = 'PROCESSING',
             uploaded_at = COALESCE(uploaded_at, now()),
             processing_started_at = now(),
-            processing_deadline_at = now() + interval '10 minutes',
+            processing_deadline_at = now() + (%s * interval '1 second'),
             processing_error = NULL
         WHERE id = %s
           AND processing_status = 'WAITING_FOR_UPLOAD'
@@ -407,7 +408,7 @@ def claim_job(job: dict) -> dict | None:
     """
     with postgres_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query, (job["itemId"],))
+            cursor.execute(query, (PROCESSING_DEADLINE_SECONDS, job["itemId"]))
             row = cursor.fetchone()
             if not row:
                 return None
