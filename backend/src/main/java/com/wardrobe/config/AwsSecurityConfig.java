@@ -38,6 +38,7 @@ public class AwsSecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(
                                 "/actuator/health",
+                                "/actuator/health/**",
                                 "/favicon.ico",
                                 "/api-docs/**",
                                 "/swagger-ui/**",

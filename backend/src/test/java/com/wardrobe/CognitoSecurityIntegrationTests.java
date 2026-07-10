@@ -94,6 +94,12 @@ class CognitoSecurityIntegrationTests {
     }
 
     @Test
+    void allowsRenderLivenessHealthCheckWithoutAuthentication() throws Exception {
+        mockMvc.perform(get("/actuator/health/liveness"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void allowsPreflightForConfiguredOrigin() throws Exception {
         mockMvc.perform(options("/api/users/me")
                         .header("Origin", "https://wardrobe.example")
