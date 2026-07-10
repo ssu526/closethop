@@ -7,6 +7,7 @@ import com.wardrobe.entity.ClothingItem;
 import com.wardrobe.exception.WardrobeException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -25,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.nio.charset.StandardCharsets;
 
 @Service
+@Slf4j
 public class OutfitSuggestionAiService {
     private final ObjectMapper objectMapper;
     private final OutfitSuggestionPrompt outfitSuggestionPrompt;
@@ -54,6 +56,12 @@ public class OutfitSuggestionAiService {
             List<ClothingItem> outfitItems,
             List<ClothingItem> candidates,
             String requestedCategory) {
+        if (candidates.size() <= config.getMaxSuggestions()) {
+            return candidates.stream()
+                    .map(ClothingItem::getId)
+                    .toList();
+        }
+
         // fake ai for local development, select the candidate with most overlapping tags
         if ("fake".equalsIgnoreCase(config.getProvider())) {
             Set<String> outfitTags = outfitItems.stream()
@@ -108,14 +116,7 @@ public class OutfitSuggestionAiService {
                     ),
                     "required", List.of("clothingItemIds")
             );
-            Map<String, Object> request = Map.of(
-                    "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))),
-                    "generationConfig", Map.of(
-                            "temperature", 0,
-                            "responseMimeType", "application/json",
-                            "responseJsonSchema", schema
-                    )
-            );
+            Map<String, Object> request = geminiRequest(prompt, schema);
 
             String response = callGemini(request);
             JsonNode root = objectMapper.readTree(response);
@@ -124,14 +125,12 @@ public class OutfitSuggestionAiService {
             Set<UUID> candidateIds = candidates.stream()
                     .map(ClothingItem::getId)
                     .collect(java.util.stream.Collectors.toSet());
-            List<UUID> validated = validateSuggestions(ids, candidateIds);
-            if (validated.isEmpty()) {
-                throw unavailable("AI did not return a clothing suggestion");
-            }
-            return validated;
+            return validateSuggestions(ids, candidateIds, config.getMaxSuggestions());
         } catch (WardrobeException exception) {
             throw exception;
         } catch (Exception exception) {
+            log.warn("Outfit AI suggestion failed model={} requestedCategory={} candidates={}",
+                    config.getModel(), requestedCategory, candidates.size(), exception);
             throw unavailable("AI could not generate outfit suggestions");
         }
     }
@@ -144,7 +143,18 @@ public class OutfitSuggestionAiService {
         );
     }
 
-    private List<UUID> validateSuggestions(JsonNode ids, Set<UUID> candidateIds) {
+    static Map<String, Object> geminiRequest(String prompt, Map<String, Object> schema) {
+        return Map.of(
+                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))),
+                "generationConfig", Map.of(
+                        "temperature", 0,
+                        "responseMimeType", "application/json",
+                        "responseJsonSchema", schema
+                )
+        );
+    }
+
+    static List<UUID> validateSuggestions(JsonNode ids, Set<UUID> candidateIds, int maxSuggestions) {
         LinkedHashSet<UUID> validated = new LinkedHashSet<>();
         if (ids.isArray()) {
             for (JsonNode id : ids) {
@@ -153,7 +163,7 @@ public class OutfitSuggestionAiService {
                     throw new IllegalArgumentException("AI returned an invalid clothing item");
                 }
                 validated.add(value);
-                if (validated.size() == config.getMaxSuggestions()) break;
+                if (validated.size() == maxSuggestions) break;
             }
         }
         return List.copyOf(validated);
@@ -200,6 +210,8 @@ public class OutfitSuggestionAiService {
                     meterRegistry.counter("wardrobe.ai.requests", "outcome", "success").increment();
                     return response;
                 } catch (RestClientException exception) {
+                    log.warn("Gemini outfit suggestion request failed attempt={} model={}",
+                            attempt + 1, config.getModel(), exception);
                     if (attempt < config.getRetry().getMaxAttempts() - 1)  {
                         try {
                             Thread.sleep(config.getRetry().getBackoffMinMs() + (long) (Math.random() * config.getRetry().getBackoffJitterMs()));

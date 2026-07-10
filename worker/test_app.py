@@ -139,6 +139,48 @@ def test_fake_provider_returns_valid_deterministic_metadata():
     assert first[0].tags == ["t-shirt", "blue", "solid"]
 
 
+def test_gemini_generation_config_prefers_current_response_format(monkeypatch):
+    import app
+
+    captured = {}
+
+    def fake_config(**kwargs):
+        captured.update(kwargs)
+        return kwargs
+
+    monkeypatch.setattr(app.types, "GenerateContentConfig", fake_config)
+
+    config = app.gemini_generation_config()
+
+    assert config == captured
+    assert captured["media_resolution"] == app.types.MediaResolution.MEDIA_RESOLUTION_LOW
+    assert captured["response_format"]["text"]["mime_type"] == "application/json"
+    assert captured["response_format"]["text"]["schema"]["properties"]["tags"]["type"] == "array"
+    assert "response_mime_type" not in captured
+    assert "response_json_schema" not in captured
+
+
+def test_gemini_generation_config_falls_back_for_pinned_sdk(monkeypatch):
+    import app
+
+    calls = []
+
+    def fake_config(**kwargs):
+        calls.append(kwargs)
+        if "response_format" in kwargs:
+            raise TypeError("unknown field")
+        return kwargs
+
+    monkeypatch.setattr(app.types, "GenerateContentConfig", fake_config)
+
+    config = app.gemini_generation_config()
+
+    assert len(calls) == 2
+    assert config["media_resolution"] == app.types.MediaResolution.MEDIA_RESOLUTION_LOW
+    assert config["response_mime_type"] == "application/json"
+    assert config["response_json_schema"]["properties"]["tags"]["type"] == "array"
+
+
 def test_classification_prompt_is_loaded_from_file():
     import app
     prompt = app.classification_prompt()
@@ -192,6 +234,7 @@ def test_process_reuses_postgres_metadata_without_calling_gemini(monkeypatch):
             self.put_calls.append(kwargs)
 
     fake_s3 = FakeS3()
+    monkeypatch.setattr(app, "S3_BUCKET", "images")
     monkeypatch.setattr(app, "s3", fake_s3)
     monkeypatch.setattr(app, "metric", lambda *_args: None)
     monkeypatch.setattr(app, "normalize_image", lambda _source: (normalized_bytes, "processed-hash"))
@@ -252,6 +295,7 @@ def test_process_calls_gemini_when_no_postgres_match(monkeypatch):
 
     fake_provider = FakeProvider()
     fake_s3 = FakeS3()
+    monkeypatch.setattr(app, "S3_BUCKET", "images")
     monkeypatch.setattr(app, "s3", fake_s3)
     monkeypatch.setattr(app, "metric", lambda *_args: None)
     monkeypatch.setattr(app, "normalize_image", lambda _source: (normalized_bytes, "processed-hash"))
@@ -267,6 +311,62 @@ def test_process_calls_gemini_when_no_postgres_match(monkeypatch):
     assert fake_provider.calls == 1
     assert fake_s3.put_calls
     assert result["metadata"]["tags"] == ["navy"]
+
+
+def test_extract_metadata_retries_once_per_configured_attempt(monkeypatch):
+    import app
+
+    class FailingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def extract(self, _image_bytes):
+            self.calls += 1
+            raise RuntimeError("429 RESOURCE_EXHAUSTED retryDelay': '32s'")
+
+    provider = FailingProvider()
+    sleeps = []
+    monkeypatch.setattr(app, "GEMINI_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr(app, "vision_provider", lambda: provider)
+    monkeypatch.setattr(app.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    metadata, input_tokens, output_tokens = app.extract_metadata_with_fallback(b"image")
+
+    assert provider.calls == 2
+    assert sleeps == [32.0]
+    assert metadata.tags == []
+    assert input_tokens == 0
+    assert output_tokens == 0
+
+
+def test_extract_metadata_does_not_retry_when_attempts_is_one(monkeypatch):
+    import app
+
+    calls = []
+    monkeypatch.setattr(app, "GEMINI_RETRY_ATTEMPTS", 1)
+    monkeypatch.setattr(
+        app,
+        "vision_provider",
+        lambda: type("Provider", (), {
+            "extract": lambda self, _image_bytes: calls.append(1) or (_ for _ in ()).throw(RuntimeError("429"))
+        })(),
+    )
+    monkeypatch.setattr(app.time, "sleep", lambda _seconds: (_ for _ in ()).throw(AssertionError("no sleep")))
+
+    metadata, _, _ = app.extract_metadata_with_fallback(b"image")
+
+    assert calls == [1]
+    assert metadata.tags == []
+
+
+def test_gemini_retry_delay_parses_retry_hints():
+    import app
+
+    assert app.gemini_retry_delay_seconds(RuntimeError("retryDelay': '32s'")) == 32.0
+    assert app.gemini_retry_delay_seconds(RuntimeError("Please retry in 3.5s.")) == 4.0
+    assert app.gemini_retry_delay_seconds(RuntimeError("retryDelay': '15s' Please retry in 15.895146969s.")) == 16.0
+    assert app.gemini_retry_delay_seconds(RuntimeError("retryDelay': '120s'")) == 60.0
+    assert app.gemini_retry_delay_seconds(RuntimeError("no hint")) == 2.0
 
 
 def test_finalize_deletes_processed_object_when_db_update_fails(monkeypatch):
@@ -376,6 +476,7 @@ def test_recovers_waiting_uploads_when_original_object_exists(monkeypatch):
             return {}
 
     finalized = []
+    monkeypatch.setattr(app, "S3_BUCKET", "images")
     monkeypatch.setattr(app, "postgres_connection", lambda: FakeConnection())
     monkeypatch.setattr(app, "s3", FakeS3())
     monkeypatch.setattr(app, "claim_job", lambda job: {"itemId": job["itemId"]})

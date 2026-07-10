@@ -26,7 +26,7 @@ aws:
 ai:
   outfit:
     provider: fake
-    model: gemini-2.5-flash-lite
+    model: gemini-3.1-flash-lite
     api-key:
     prompt-path: classpath:prompts/outfit_suggestion_prompt.txt
     max-candidates: 100

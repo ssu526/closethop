@@ -3,9 +3,11 @@ import { LoaderCircle, Minus, Plus, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { api } from "../lib/api";
-import type { Category, Outfit } from "../types";
+import type { Category, ClothingItemDetail, Outfit, OutfitItem, WardrobeListItem } from "../types";
 import { categories } from "../types";
 import { Button, EmptyState, Loading } from "./ui";
+
+const MAX_AI_SUGGESTIONS = 3;
 
 const categoryEmoji: Record<Category, string> = {
   TOPS: "👕",
@@ -35,8 +37,9 @@ export function OutfitForm({
   const { user } = useAuth();
   const [category, setCategory] = useState<Category>(categories[0]);
   const [selected, setSelected] = useState<string[]>(outfit?.items.map((item) => item.id) ?? []);
+  const [aiSuggestions, setAiSuggestions] = useState<ClothingItemDetail[]>([]);
   const [validation, setValidation] = useState("");
-  const [suggestionMessage, setSuggestionMessage] = useState("");
+  const dedupedSelected = Array.from(new Set(selected));
   const clothing = useQuery({
     queryKey: ["clothing", wardrobeUserId ?? user?.id, "outfit-picker"],
     queryFn: () => wardrobeUserId
@@ -46,6 +49,7 @@ export function OutfitForm({
 
   useEffect(() => {
     setSelected(outfit?.items.map((item) => item.id) ?? []);
+    setAiSuggestions([]);
   }, [outfit]);
 
   const wardrobeItems = (clothing.data?.content ?? []).filter((item) => item.processingState === "READY");
@@ -54,19 +58,20 @@ export function OutfitForm({
   );
   const allItems = [...wardrobeItems, ...retainedOutfitItems];
   const categoryItems = wardrobeItems.filter((item) => item.category === category);
+  const availableCategoryItems = categoryItems.filter((item) => !dedupedSelected.includes(item.id));
+  const notEnoughCategoryItemsForAi = availableCategoryItems.length <= MAX_AI_SUGGESTIONS;
   const selectedItems = allItems.filter((item) => selected.includes(item.id));
   const suggestion = useMutation({
-    mutationFn: () => api.outfits.suggest(selected, category),
+    mutationFn: () => api.outfits.suggest(dedupedSelected, category),
     onSuccess: (items) => {
-      setSelected((current) => [
-        ...current,
-        ...items.map((item) => item.id).filter((id) => !current.includes(id))
-      ]);
+      setAiSuggestions(items);
       setValidation("");
-      setSuggestionMessage(`AI added ${items.length} ${formatCategory(category)} suggestion${items.length === 1 ? "" : "s"}.`);
+      if (!items.length) {
+        setValidation("No matching found.");
+      }
     },
     onError: (reason) => {
-      setSuggestionMessage("");
+      setAiSuggestions([]);
       setValidation(reason instanceof Error ? reason.message : "AI could not find a suggestion.");
     }
   });
@@ -77,13 +82,24 @@ export function OutfitForm({
 
   function add(id: string) {
     setSelected((current) => current.includes(id) ? current : [...current, id]);
+    setAiSuggestions([]);
     setValidation("");
-    setSuggestionMessage("");
   }
 
   function remove(id: string) {
     setSelected((current) => current.filter((value) => value !== id));
-    setSuggestionMessage("");
+    setAiSuggestions([]);
+  }
+
+  function selectSuggestion(id: string) {
+    setSelected((current) => current.includes(id) ? current : [...current, id]);
+    setAiSuggestions([]);
+    setValidation("");
+  }
+
+  function discardSuggestions() {
+    setAiSuggestions([]);
+    setValidation("");
   }
 
   function askForSuggestion() {
@@ -92,19 +108,49 @@ export function OutfitForm({
       return;
     }
     setValidation("");
-    setSuggestionMessage("");
     suggestion.mutate();
+  }
+
+  function submitOutfit(clothingItemIds: string[]) {
+    if (!clothingItemIds.length) {
+      setValidation("Choose at least one piece for this outfit.");
+      return false;
+    }
+    onSubmit({
+      clothingItemIds
+    });
+    return true;
   }
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!selected.length) {
-      setValidation("Choose at least one piece for this outfit.");
-      return;
-    }
-    onSubmit({
-      clothingItemIds: selected
-    });
+    submitOutfit(dedupedSelected);
+  }
+
+  function renderOutfitTile(item: WardrobeListItem | ClothingItemDetail | OutfitItem, onRemove?: () => void) {
+    return (
+      <div key={item.id} className="relative aspect-[4/5] overflow-hidden rounded-xl border border-stone bg-white">
+        <img className="h-full w-full object-contain p-2" src={item.imageUrl ?? ""} alt={item.category?.toLowerCase() ?? "clothing"} />
+        {"removedFromWardrobe" in item && item.removedFromWardrobe && (
+          <span
+            title="Item removed from wardrobe"
+            className="absolute bottom-2 left-2 rounded-full bg-ink px-2 py-1 text-[10px] font-semibold text-white"
+          >
+            Removed
+          </span>
+        )}
+        {onRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="absolute right-2 top-2 rounded-full bg-white p-1.5 text-red-800 shadow-md transition hover:bg-red-50"
+            aria-label={`Remove ${item.category?.toLowerCase() ?? "clothing"} from outfit`}
+          >
+            <Minus size={14} />
+          </button>
+        )}
+      </div>
+    );
   }
 
   if (clothing.isLoading) return <Loading label="Opening the wardrobe" />;
@@ -120,7 +166,11 @@ export function OutfitForm({
               <button
                 key={value}
                 type="button"
-                onClick={() => setCategory(value)}
+                onClick={() => {
+                  setCategory(value);
+                  setAiSuggestions([]);
+                  setValidation("");
+                }}
                 className={`flex items-center gap-2 rounded-xl border bg-white px-3 py-2.5 text-left text-xs font-semibold transition ${
                   category === value ? "border-clay text-clay ring-2 ring-clay/10" : "border-stone hover:border-clay"
                 }`}
@@ -138,7 +188,7 @@ export function OutfitForm({
               type="button"
               variant="secondary"
               className="mt-3 w-full px-3"
-              disabled={!selected.length || suggestion.isPending}
+              disabled={!selected.length || suggestion.isPending || notEnoughCategoryItemsForAi}
               onClick={askForSuggestion}
             >
               {suggestion.isPending
@@ -147,6 +197,11 @@ export function OutfitForm({
             </Button>
             {!selected.length && (
               <p className="mt-2 text-center text-[11px] text-ink/45">Select a starting piece first.</p>
+            )}
+            {selected.length > 0 && notEnoughCategoryItemsForAi && (
+              <p className="mt-2 text-center text-[11px] text-ink/45">
+                We need more than <strong>{MAX_AI_SUGGESTIONS}</strong> available items in this category for AI suggestions.
+              </p>
             )}
           </div>}
         </section>
@@ -190,33 +245,47 @@ export function OutfitForm({
             </div>
           ) : (
             <div className="grid max-h-[28rem] grid-cols-2 gap-3 overflow-y-auto">
-              {selectedItems.map((item) => (
-                <div key={item.id} className="relative aspect-[4/5] overflow-hidden rounded-xl border border-stone bg-white">
-                  <img className="h-full w-full object-contain p-2" src={item.imageUrl ?? ""} alt={item.category?.toLowerCase() ?? "clothing"} />
-                  {"removedFromWardrobe" in item && item.removedFromWardrobe && (
-                    <span
-                      title="Item removed from wardrobe"
-                      className="absolute bottom-2 left-2 rounded-full bg-ink px-2 py-1 text-[10px] font-semibold text-white"
-                    >
-                      Removed
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => remove(item.id)}
-                    className="absolute right-2 top-2 rounded-full bg-white p-1.5 text-red-800 shadow-md transition hover:bg-red-50"
-                    aria-label={`Remove ${item.category?.toLowerCase() ?? "clothing"} from outfit`}
-                  >
-                    <Minus size={14} />
-                  </button>
-                </div>
-              ))}
+              {selectedItems.map((item) => renderOutfitTile(item, () => remove(item.id)))}
             </div>
           )}
         </section>
       </div>
+      {!manualOnly && aiSuggestions.length > 0 && (
+        <section className="mt-6 rounded-2xl border border-stone/70 bg-white p-4">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-[.16em] text-ink/45">Suggested outfit options</h3>
+              <p className="mt-1 text-sm text-ink/60">Choose one option to add it to the selected outfit, or discard them all.</p>
+            </div>
+            <Button type="button" variant="ghost" className="px-3" onClick={discardSuggestions}>
+              Discard
+            </Button>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            {aiSuggestions.map((item, index) => (
+              <article key={item.id} className="rounded-2xl border border-stone/70 bg-paper/40 p-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-semibold text-ink">Option {index + 1}</h4>
+                  <span className="text-xs text-ink/45">{selected.length + (selected.includes(item.id) ? 0 : 1)} pieces</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {selectedItems.map((selectedItem) => renderOutfitTile(selectedItem))}
+                  {renderOutfitTile(item)}
+                </div>
+                <Button
+                  type="button"
+                  className="mt-4 w-full"
+                  disabled={busy}
+                  onClick={() => selectSuggestion(item.id)}
+                >
+                  Select
+                </Button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
       {validation && <p className="mt-4 text-sm text-red-700" role="alert">{validation}</p>}
-      {suggestionMessage && <p className="mt-4 text-sm text-clay" role="status">{suggestionMessage}</p>}
       <div className="mt-6 flex justify-end">
         <Button type="submit" disabled={busy}>
           {busy ? "Saving…" : submitLabel ?? (outfit ? "Save outfit" : "Create outfit")}

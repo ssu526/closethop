@@ -76,7 +76,7 @@ processing:
 ai:
   outfit:
     provider: ${OUTFIT_AI_PROVIDER:fake}
-    model: ${OUTFIT_AI_MODEL:gemini-2.5-flash-lite}
+    model: ${OUTFIT_AI_MODEL:gemini-3.1-flash-lite}
     api-key: ${GEMINI_API_KEY:}
     prompt-path: ${OUTFIT_SUGGESTION_PROMPT_PATH:classpath:prompts/outfit_suggestion_prompt.txt}
 

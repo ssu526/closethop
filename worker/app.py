@@ -2,7 +2,9 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
+import re
 import threading
 import time
 from functools import lru_cache
@@ -26,7 +28,7 @@ class ClothingMetadata(BaseModel):
 S3_BUCKET = os.getenv("IMAGE_BUCKET") or os.getenv("AWS_S3_BUCKET")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 PROCESSING_QUEUE_URL = os.getenv("PROCESSING_QUEUE_URL")
-MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash-lite")
+MODEL = os.getenv("VISION_MODEL", "gemini-3.1-flash-lite")
 PROVIDER = os.getenv("VISION_PROVIDER", "gemini")
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL") or None
 DATASOURCE_SECRET_ARN = os.getenv("DATASOURCE_SECRET_ARN")
@@ -459,32 +461,45 @@ class GeminiVisionMetadataProvider:
     def extract(self, image_bytes: bytes) -> tuple[ClothingMetadata, int, int]:
         prompt = classification_prompt()
         image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-        last_error = None
-        for _ in range(2):
-            try:
-                response = gemini_client().models.generate_content(
-                    model=MODEL,
-                    contents=[prompt, image],
-                    config=types.GenerateContentConfig(
-                        temperature=0,
-                        max_output_tokens=400,
-                        response_mime_type="application/json",
-                        response_json_schema=ClothingMetadata.model_json_schema(),
-                    ),
-                )
-                metadata = ClothingMetadata.model_validate_json(response.text)
-                metadata.tags = list(dict.fromkeys(
-                    tag.strip().lower() for tag in metadata.tags if tag.strip()
-                ))
-                usage = getattr(response, "usage_metadata", None)
-                return (
-                    metadata,
-                    int(getattr(usage, "prompt_token_count", 0) or 0),
-                    int(getattr(usage, "candidates_token_count", 0) or 0),
-                )
-            except (ValidationError, ValueError, TypeError) as exc:
-                last_error = exc
-        raise ValueError("INVALID_MODEL_OUTPUT") from last_error
+        response = gemini_client().models.generate_content(
+            model=MODEL,
+            contents=[prompt, image],
+            config=gemini_generation_config(),
+        )
+        metadata = ClothingMetadata.model_validate_json(response.text)
+        metadata.tags = list(dict.fromkeys(
+            tag.strip().lower() for tag in metadata.tags if tag.strip()
+        ))
+        usage = getattr(response, "usage_metadata", None)
+        return (
+            metadata,
+            int(getattr(usage, "prompt_token_count", 0) or 0),
+            int(getattr(usage, "candidates_token_count", 0) or 0),
+        )
+
+
+def gemini_generation_config():
+    schema = ClothingMetadata.model_json_schema()
+    try:
+        return types.GenerateContentConfig(
+            temperature=0,
+            max_output_tokens=400,
+            media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+            response_format={
+                "text": {
+                    "mime_type": "application/json",
+                    "schema": schema,
+                },
+            },
+        )
+    except (TypeError, ValueError):
+        return types.GenerateContentConfig(
+            temperature=0,
+            max_output_tokens=400,
+            media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+            response_mime_type="application/json",
+            response_json_schema=schema,
+        )
 
 
 class FakeVisionMetadataProvider:
@@ -568,14 +583,38 @@ def process(job: dict) -> dict:
 
 def extract_metadata_with_fallback(image_bytes: bytes) -> tuple[ClothingMetadata, int, int]:
     last_error = None
-    for _ in range(max(1, GEMINI_RETRY_ATTEMPTS)):
+    attempts = max(1, GEMINI_RETRY_ATTEMPTS)
+    for attempt in range(attempts):
         try:
             return vision_provider().extract(image_bytes)
         except Exception as exc:
             last_error = exc
-            logger.warning("Gemini classification failed; retrying if attempts remain: %s", exc)
+            if attempt >= attempts - 1:
+                break
+            delay = gemini_retry_delay_seconds(exc)
+            logger.warning(
+                "Gemini classification failed; retrying in %.1fs: %s",
+                delay,
+                exc,
+            )
+            time.sleep(delay)
     logger.warning("Gemini classification failed permanently; continuing without tags: %s", last_error)
     return ClothingMetadata(tags=[]), 0, 0
+
+
+def gemini_retry_delay_seconds(exc: Exception) -> float:
+    message = str(exc)
+    retry_hints = [
+        float(value)
+        for value in re.findall(r"retryDelay['\"]?\s*:\s*['\"]?([0-9]+(?:\.[0-9]+)?)s", message)
+    ]
+    retry_hints.extend(
+        float(value)
+        for value in re.findall(r"retry in ([0-9]+(?:\.[0-9]+)?)s", message, re.IGNORECASE)
+    )
+    if retry_hints:
+        return float(min(60, max(1, math.ceil(max(retry_hints)))))
+    return 2.0
 
 
 def put_processed_with_retry(output_key: str, normalized: bytes):

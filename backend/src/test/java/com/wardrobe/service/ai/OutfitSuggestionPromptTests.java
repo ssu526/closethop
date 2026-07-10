@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -42,24 +43,41 @@ class OutfitSuggestionPromptTests {
                 new OutfitSuggestionPrompt(tempDirectory.resolve("not-found.txt").toString()));
     }
 
-//    @Test
-//    void validatesDeduplicatesAndCapsModelSuggestions() throws Exception {
-//        ObjectMapper mapper = new ObjectMapper();
-//        UUID first = UUID.randomUUID();
-//        UUID second = UUID.randomUUID();
-//        UUID third = UUID.randomUUID();
-//        UUID fourth = UUID.randomUUID();
-//        var ids = mapper.readTree(mapper.writeValueAsString(
-//                List.of(first, first, second, third, fourth)));
-//
-//        assertEquals(
-//                List.of(first, second, third),
-//                OutfitSuggestionAiService.validateSuggestions(
-//                        ids, Set.of(first, second, third, fourth)));
-//
-//        UUID invented = UUID.randomUUID();
-//        var invalid = mapper.readTree(mapper.writeValueAsString(List.of(invented)));
-//        assertThrows(IllegalArgumentException.class, () ->
-//                OutfitSuggestionAiService.validateSuggestions(invalid, Set.of(first)));
-//    }
+    @Test
+    @SuppressWarnings("unchecked")
+    void buildsGeminiGenerateContentStructuredOutputRequest() {
+        Map<String, Object> schema = Map.of("type", "object");
+
+        Map<String, Object> request = OutfitSuggestionAiService.geminiRequest("pick one", schema);
+
+        Map<String, Object> generationConfig = (Map<String, Object>) request.get("generationConfig");
+        assertEquals(0, generationConfig.get("temperature"));
+        assertFalse(generationConfig.containsKey("responseFormat"));
+        assertEquals("application/json", generationConfig.get("responseMimeType"));
+        assertEquals(schema, generationConfig.get("responseJsonSchema"));
+    }
+
+    @Test
+    void validatesDeduplicatesCapsAndAllowsEmptyModelSuggestions() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        UUID third = UUID.randomUUID();
+        UUID fourth = UUID.randomUUID();
+        var ids = mapper.readTree(mapper.writeValueAsString(
+                List.of(first, first, second, third, fourth)));
+
+        assertEquals(
+                List.of(first, second, third),
+                OutfitSuggestionAiService.validateSuggestions(
+                        ids, Set.of(first, second, third, fourth), 3));
+
+        var empty = mapper.readTree(mapper.writeValueAsString(List.of()));
+        assertEquals(List.of(), OutfitSuggestionAiService.validateSuggestions(empty, Set.of(first), 3));
+
+        UUID invented = UUID.randomUUID();
+        var invalid = mapper.readTree(mapper.writeValueAsString(List.of(invented)));
+        assertThrows(IllegalArgumentException.class, () ->
+                OutfitSuggestionAiService.validateSuggestions(invalid, Set.of(first), 3));
+    }
 }

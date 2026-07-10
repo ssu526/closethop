@@ -42,26 +42,55 @@ const ALREADY_SIGNED_IN_MESSAGE = "There is already a signed in user.";
 const USERNAME_EXISTS_ERROR = "UsernameExistsException";
 const CONFIRM_SIGN_UP_STEP = "CONFIRM_SIGN_UP";
 
-function firstPresent(...values: Array<string | undefined>) {
-  return values.map((value) => value?.trim()).find(Boolean);
+interface CognitoErrorLike {
+  name?: unknown;
+  __type?: unknown;
+  message?: unknown;
+  cause?: unknown;
 }
 
-function isAlreadySignedInUserError(reason: unknown) {
-  return reason instanceof Error && reason.message === ALREADY_SIGNED_IN_MESSAGE;
+function firstPresent(...values: Array<string | undefined>) {
+  return values.map((value) => value?.trim()).find(Boolean);
 }
 
 function normalizeCognitoDomain(domain: string) {
   return domain.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
 
-function isErrorNamed(reason: unknown, name: string) {
-  return (
-    (reason instanceof Error && reason.name === name) ||
-    (typeof reason === "object" &&
-      reason !== null &&
-      "__type" in reason &&
-      (reason as { __type?: unknown }).__type === name)
-  );
+function cognitoErrorChain(reason: unknown): CognitoErrorLike[] {
+  const chain: CognitoErrorLike[] = [];
+  let current = reason;
+  while (typeof current === "object" && current !== null) {
+    chain.push(current as CognitoErrorLike);
+    current = "cause" in current ? (current as CognitoErrorLike).cause : null;
+  }
+  return chain;
+}
+
+function cognitoErrorNames(reason: unknown) {
+  return cognitoErrorChain(reason).flatMap((error) => [error.name, error.__type]).flatMap((value) => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (!normalized) return [];
+    const shortName = normalized.split(/[#:]/).pop() ?? normalized;
+    return [normalized, shortName];
+  });
+}
+
+function hasCognitoErrorName(reason: unknown, name: string) {
+  return cognitoErrorNames(reason).some((value) => value === name);
+}
+
+function hasCognitoErrorMessage(reason: unknown, message: string) {
+  if (reason instanceof Error && reason.message === message) return true;
+  return cognitoErrorChain(reason).some((error) => error.message === message);
+}
+
+function isAlreadySignedInUserError(reason: unknown) {
+  return hasCognitoErrorMessage(reason, ALREADY_SIGNED_IN_MESSAGE);
+}
+
+function isUsernameExistsError(reason: unknown) {
+  return hasCognitoErrorName(reason, USERNAME_EXISTS_ERROR);
 }
 
 function stringClaim(value: unknown) {
@@ -252,7 +281,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         await beginNewUserEmailOtp(normalizedEmail);
       } catch (reason) {
-        if (!isErrorNamed(reason, USERNAME_EXISTS_ERROR)) throw reason;
+        if (!isUsernameExistsError(reason)) throw reason;
         await beginExistingUserEmailOtp(normalizedEmail);
       }
     };

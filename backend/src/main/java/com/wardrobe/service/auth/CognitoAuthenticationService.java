@@ -3,15 +3,15 @@ package com.wardrobe.service.auth;
 import com.wardrobe.entity.User;
 import com.wardrobe.exception.UnauthorizedException;
 import com.wardrobe.repository.UserRepository;
+import com.wardrobe.service.user.UserProvisioningService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.context.annotation.Profile;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.dao.DataIntegrityViolationException;
-import com.wardrobe.service.user.UserProvisioningService;
 
 @Service
 @Profile("prod")
@@ -50,7 +50,7 @@ public class CognitoAuthenticationService implements CurrentUserService {
             user.setEmail(email);
         }
         String username = resolveUsername(jwt);
-        if (!isProviderGeneratedUsername(username) || isProviderGeneratedUsername(user.getUsername())) {
+        if (shouldReplaceUsername(user.getUsername(), username)) {
             user.setUsername(username);
         }
         return user;
@@ -68,12 +68,39 @@ public class CognitoAuthenticationService implements CurrentUserService {
             return email.split("@", 2)[0];
         }
         String cognitoUsername = jwt.getClaimAsString("cognito:username");
-        return cognitoUsername != null && !cognitoUsername.isBlank()
-                ? cognitoUsername
-                : jwt.getSubject();
+        if (isDisplayableUsername(cognitoUsername)) {
+            return cognitoUsername.trim();
+        }
+        return jwt.getSubject();
     }
 
-    private boolean isProviderGeneratedUsername(String username) {
-        return username != null && username.matches("(?i)google_[a-z0-9_-]+");
+    private boolean shouldReplaceUsername(String currentUsername, String nextUsername) {
+        if (!isDisplayableUsername(nextUsername)) {
+            return isOpaqueUsername(currentUsername);
+        }
+        return isOpaqueUsername(currentUsername) || !isUserChosenUsername(currentUsername);
+    }
+
+    private boolean isUserChosenUsername(String username) {
+        return username != null && !username.isBlank() && !isOpaqueUsername(username);
+    }
+
+    private boolean isDisplayableUsername(String username) {
+        return username != null && !username.isBlank() && !isOpaqueUsername(username);
+    }
+
+    private boolean isOpaqueUsername(String username) {
+        if (username == null) {
+            return true;
+        }
+        String normalized = username.trim();
+        if (normalized.isBlank()) {
+            return true;
+        }
+        return normalized.matches("(?i)google_[a-z0-9_-]+")
+                || normalized.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+                || normalized.matches("(?i)[0-9a-f]{32}")
+                || normalized.matches("(?i)[0-9a-f]{40}")
+                || normalized.matches("(?i)[0-9a-f]{64}");
     }
 }

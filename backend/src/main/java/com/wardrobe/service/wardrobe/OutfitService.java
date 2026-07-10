@@ -173,8 +173,7 @@ public class OutfitService {
                 .filter(item -> !selectedIds.contains(item.getId()))
                 .toList();
         if (candidates.isEmpty()) {
-            throw new ResourceNotFoundException(
-                    "No other " + request.getCategory().toLowerCase() + " are available to suggest");
+            return List.of();
         }
 
         Map<UUID, ClothingItem> candidatesById = candidates.stream()

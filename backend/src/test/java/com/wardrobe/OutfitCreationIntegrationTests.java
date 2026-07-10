@@ -118,6 +118,73 @@ class OutfitCreationIntegrationTests {
     }
 
     @Test
+    void suggestsTheOnlyAvailableItemFromTheRequestedCategoryWithoutAiRanking() {
+        User user = userRepository.save(User.builder()
+                .email("single-suggestion-test@example.com")
+                .username("single-suggestion-test")
+                .password("unused")
+                .visibility(Enums.Visibility.PRIVATE)
+                .build());
+
+        ClothingItem blouse = clothingRepository.save(ClothingItem.builder()
+                .category(Enums.Category.TOPS)
+                .status(Enums.ProcessingStatus.READY)
+                .tags(Set.of("white", "button front"))
+                .user(user)
+                .build());
+        ClothingItem jeans = clothingRepository.save(ClothingItem.builder()
+                .category(Enums.Category.BOTTOMS)
+                .status(Enums.ProcessingStatus.READY)
+                .tags(Set.of("blue", "denim"))
+                .user(user)
+                .build());
+        clothingRepository.save(ClothingItem.builder()
+                .category(Enums.Category.DRESSES)
+                .status(Enums.ProcessingStatus.READY)
+                .tags(Set.of("floral"))
+                .user(user)
+                .build());
+
+        var suggestions = outfitService.suggestItems(
+                OutfitDTO.AiOutfitSuggestionRequest.builder()
+                        .clothingItemIds(Set.of(blouse.getId()))
+                        .category("BOTTOMS")
+                        .build(),
+                user
+        );
+
+        assertEquals(1, suggestions.size());
+        assertEquals(jeans.getId(), suggestions.get(0).getId());
+    }
+
+    @Test
+    void returnsNoSuggestionsWhenOnlySelectedItemsExistInRequestedCategory() {
+        User user = userRepository.save(User.builder()
+                .email("no-suggestion-test@example.com")
+                .username("no-suggestion-test")
+                .password("unused")
+                .visibility(Enums.Visibility.PRIVATE)
+                .build());
+
+        ClothingItem selectedTop = clothingRepository.save(ClothingItem.builder()
+                .category(Enums.Category.TOPS)
+                .status(Enums.ProcessingStatus.READY)
+                .tags(Set.of("blue", "cotton"))
+                .user(user)
+                .build());
+
+        var suggestions = outfitService.suggestItems(
+                OutfitDTO.AiOutfitSuggestionRequest.builder()
+                        .clothingItemIds(Set.of(selectedTop.getId()))
+                        .category("TOPS")
+                        .build(),
+                user
+        );
+
+        assertEquals(List.of(), suggestions);
+    }
+
+    @Test
     void personalAllItemsReturnsTopsAndDresses() {
         User user = userRepository.save(User.builder()
                 .email("all-personal-items@example.com")

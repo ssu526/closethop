@@ -103,6 +103,29 @@ describe("AuthProvider Cognito auth", () => {
     expect(authMocks.signOut).toHaveBeenCalled();
   });
 
+  it("clears a stale Cognito session for Google sign-in when Amplify returns a plain object error", async () => {
+    const user = userEvent.setup();
+
+    authMocks.signInWithRedirect
+      .mockRejectedValueOnce({ message: "There is already a signed in user." })
+      .mockResolvedValueOnce(undefined);
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    await waitFor(() => {
+      expect(authMocks.signInWithRedirect).toHaveBeenCalledTimes(2);
+    });
+    expect(authMocks.signOut).toHaveBeenCalled();
+  });
+
   it("starts Google Hosted UI without signing out first", async () => {
     const user = userEvent.setup();
 
@@ -220,10 +243,89 @@ describe("AuthProvider Cognito auth", () => {
     expect(authMocks.signUp).toHaveBeenCalledTimes(2);
   });
 
+  it("clears a stale Cognito session and retries email OTP when Amplify returns a plain object error", async () => {
+    const user = userEvent.setup();
+
+    authMocks.signUp
+      .mockRejectedValueOnce({ message: "There is already a signed in user." })
+      .mockResolvedValueOnce({
+        isSignUpComplete: false,
+        nextStep: { signUpStep: "CONFIRM_SIGN_UP" },
+        userId: "user-1"
+      });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+    expect(authMocks.signOut).toHaveBeenCalled();
+    expect(authMocks.signUp).toHaveBeenCalledTimes(2);
+  });
+
   it("falls back to sign-in OTP when the email already has an account", async () => {
     const user = userEvent.setup();
 
     authMocks.signUp.mockRejectedValueOnce(Object.assign(new Error("exists"), { name: "UsernameExistsException" }));
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+    expect(authMocks.signIn).toHaveBeenCalledWith({
+      username: "sue@example.com",
+      options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
+    });
+  });
+
+  it("falls back to sign-in OTP when Cognito returns a plain object username-exists error", async () => {
+    const user = userEvent.setup();
+
+    authMocks.signUp.mockRejectedValueOnce({ __type: "UsernameExistsException", message: "User already exists" });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+    expect(authMocks.signIn).toHaveBeenCalledWith({
+      username: "sue@example.com",
+      options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
+    });
+  });
+
+  it("falls back to sign-in OTP when Cognito returns a namespaced username-exists error", async () => {
+    const user = userEvent.setup();
+
+    authMocks.signUp.mockRejectedValueOnce({
+      __type: "com.amazonaws.cognitoidentityprovider#UsernameExistsException",
+      message: "User already exists"
+    });
 
     render(
       <AuthProvider>

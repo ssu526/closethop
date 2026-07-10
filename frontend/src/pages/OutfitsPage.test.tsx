@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as authModule from "../auth/AuthContext";
 import { api } from "../lib/api";
 import type {
+  ClothingItemDetail,
   Outfit,
   PageResponse,
   UserProfile,
@@ -27,6 +28,15 @@ function makeSummary(
     failureReason: null,
     displayNote: null,
     ...overrides,
+  };
+}
+
+function makeDetail(
+  overrides: Partial<ClothingItemDetail> = {},
+): ClothingItemDetail {
+  return {
+    ...makeSummary(overrides),
+    tags: [],
   };
 }
 
@@ -97,11 +107,14 @@ describe("OutfitsPage", () => {
       createdAt: "2026-07-07T00:00:00Z",
       updatedAt: "2026-07-07T00:00:00Z",
     });
+    vi.spyOn(api.outfits, "suggest").mockResolvedValue([]);
     vi.spyOn(api.clothing, "list").mockResolvedValue(makePage([
       makeSummary({ id: "top-1", category: "TOPS", imageUrl: "https://example.com/top-1.png" }),
       makeSummary({ id: "top-2", category: "TOPS", imageUrl: "https://example.com/top-2.png" }),
       makeSummary({ id: "dress-1", category: "DRESSES", imageUrl: "https://example.com/dress-1.png" }),
       makeSummary({ id: "dress-2", category: "DRESSES", imageUrl: "https://example.com/dress-2.png" }),
+      makeSummary({ id: "dress-3", category: "DRESSES", imageUrl: "https://example.com/dress-3.png" }),
+      makeSummary({ id: "dress-4", category: "DRESSES", imageUrl: "https://example.com/dress-4.png" }),
     ]));
   });
 
@@ -118,8 +131,104 @@ describe("OutfitsPage", () => {
     const dialog = await screen.findByRole("dialog", { name: /compose an outfit/i });
     await user.click(within(dialog).getByRole("button", { name: /dresses/i }));
 
-    expect(await within(dialog).findAllByAltText("dresses")).toHaveLength(2);
+    expect(await within(dialog).findAllByAltText("dresses")).toHaveLength(4);
     expect(api.clothing.list).toHaveBeenCalledWith({ page: 0, size: 100 });
+  });
+
+  it("disables the ai suggestion button when the category has too few available items", async () => {
+    const user = userEvent.setup();
+    renderOutfitsPage();
+
+    await user.click(await screen.findByRole("button", { name: /compose outfit/i }));
+    const dialog = await screen.findByRole("dialog", { name: /compose an outfit/i });
+
+    await user.click(within(dialog).getAllByRole("button", { name: /add tops to outfit/i })[0]);
+    const aiButton = within(dialog).getByRole("button", { name: /ask ai for tops/i });
+
+    expect(aiButton).toBeDisabled();
+    expect(within(dialog).getByText(/We need more than/i)).toBeInTheDocument();
+    expect(within(dialog).getByText("3")).toContainHTML("<strong>3</strong>");
+  });
+
+  it("lets the user select one ai outfit option before saving", async () => {
+    vi.mocked(api.outfits.suggest).mockResolvedValue([
+      makeDetail({ id: "dress-1", category: "DRESSES", imageUrl: "https://example.com/dress-1.png" }),
+      makeDetail({ id: "dress-2", category: "DRESSES", imageUrl: "https://example.com/dress-2.png" }),
+      makeDetail({ id: "dress-3", category: "DRESSES", imageUrl: "https://example.com/dress-3.png" }),
+    ]);
+
+    const user = userEvent.setup();
+    renderOutfitsPage();
+
+    await user.click(await screen.findByRole("button", { name: /compose outfit/i }));
+    const dialog = await screen.findByRole("dialog", { name: /compose an outfit/i });
+
+    await user.click(within(dialog).getAllByRole("button", { name: /add tops to outfit/i })[0]);
+    await user.click(within(dialog).getByRole("button", { name: /dresses/i }));
+    await user.click(within(dialog).getByRole("button", { name: /ask ai for dresses/i }));
+
+    expect(await within(dialog).findByText("Suggested outfit options")).toBeInTheDocument();
+    expect(within(dialog).queryByText("AI suggestions")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/AI found 3 dresses suggestions/i)).not.toBeInTheDocument();
+    expect(within(dialog).getAllByRole("button", { name: /^select$/i })).toHaveLength(3);
+
+    await user.click(within(dialog).getAllByRole("button", { name: /^select$/i })[1]);
+
+    expect(api.outfits.create).not.toHaveBeenCalled();
+    expect(within(dialog).queryByText("Suggested outfit options")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("2 selected")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: /create outfit/i }));
+
+    await waitFor(() => {
+      expect(api.outfits.create).toHaveBeenCalled();
+      expect(vi.mocked(api.outfits.create).mock.calls[0]?.[0]).toEqual({
+        clothingItemIds: ["top-1", "dress-2"],
+      });
+    });
+  });
+
+  it("lets the user discard ai outfit options without changing the selected outfit", async () => {
+    vi.mocked(api.outfits.suggest).mockResolvedValue([
+      makeDetail({ id: "dress-1", category: "DRESSES", imageUrl: "https://example.com/dress-1.png" }),
+      makeDetail({ id: "dress-2", category: "DRESSES", imageUrl: "https://example.com/dress-2.png" }),
+      makeDetail({ id: "dress-3", category: "DRESSES", imageUrl: "https://example.com/dress-3.png" }),
+    ]);
+
+    const user = userEvent.setup();
+    renderOutfitsPage();
+
+    await user.click(await screen.findByRole("button", { name: /compose outfit/i }));
+    const dialog = await screen.findByRole("dialog", { name: /compose an outfit/i });
+
+    await user.click(within(dialog).getAllByRole("button", { name: /add tops to outfit/i })[0]);
+    await user.click(within(dialog).getByRole("button", { name: /dresses/i }));
+    await user.click(within(dialog).getByRole("button", { name: /ask ai for dresses/i }));
+
+    expect(await within(dialog).findByText("Suggested outfit options")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: /^discard$/i }));
+
+    expect(within(dialog).queryByText("Suggested outfit options")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("1 selected")).toBeInTheDocument();
+    expect(api.outfits.create).not.toHaveBeenCalled();
+  });
+
+  it("shows a friendly message when no ai match is found", async () => {
+    vi.mocked(api.outfits.suggest).mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    renderOutfitsPage();
+
+    await user.click(await screen.findByRole("button", { name: /compose outfit/i }));
+    const dialog = await screen.findByRole("dialog", { name: /compose an outfit/i });
+
+    await user.click(within(dialog).getAllByRole("button", { name: /add tops to outfit/i })[0]);
+    await user.click(within(dialog).getByRole("button", { name: /dresses/i }));
+    await user.click(within(dialog).getByRole("button", { name: /ask ai for dresses/i }));
+
+    expect(await within(dialog).findByText("No matching found.")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Suggested outfit options")).not.toBeInTheDocument();
   });
 
   it("shows a red dot on pending suggestions when pending items exist", async () => {

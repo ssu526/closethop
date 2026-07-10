@@ -47,7 +47,13 @@ services:
       IMAGE_BUCKET: closethop-images
       PROCESSING_QUEUE_URL: http://localstack:4566/000000000000/closethop-image-processing
       PUBLIC_URL: http://localhost:4566/closethop-images
-      VISION_PROVIDER: fake
+      VISION_PROVIDER: gemini
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_RETRY_ATTEMPTS: "2"
+      PROCESSING_DEADLINE_SECONDS: "120"
+      SQS_VISIBILITY_TIMEOUT_SECONDS: "300"
+      WORKER_CONCURRENCY: "1"
+      SQS_MAX_MESSAGES: "1"
       METRICS_ENABLED: "false"
     depends_on:
       localstack:
@@ -55,7 +61,13 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
