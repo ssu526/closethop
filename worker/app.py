@@ -3,7 +3,6 @@ import io
 import json
 import logging
 import os
-import gc
 import threading
 import time
 from functools import lru_cache
@@ -18,18 +17,6 @@ from google.genai import types
 from PIL import Image, ImageOps
 import psycopg2
 from pydantic import BaseModel, Field, ValidationError
-
-try:
-    from rembg import remove, new_session
-except Exception as exc:  # pragma: no cover - fallback for local test/runtime issues
-    logger = logging.getLogger("closethop.image_worker")
-    logger.warning("Unable to import rembg; falling back to light background removal: %s", exc)
-
-    def remove(image, **_kwargs):
-        raise ValueError("REMBG_UNAVAILABLE")
-
-    def new_session(_name):
-        return None
 
 
 class ClothingMetadata(BaseModel):
@@ -55,7 +42,7 @@ SQS_MAX_MESSAGES = int(os.getenv("SQS_MAX_MESSAGES", "1"))
 SQS_WAIT_TIME_SECONDS = int(os.getenv("SQS_WAIT_TIME_SECONDS", "20"))
 SQS_VISIBILITY_TIMEOUT_SECONDS = int(os.getenv("SQS_VISIBILITY_TIMEOUT_SECONDS", "300"))
 PROCESSING_DEADLINE_SECONDS = int(os.getenv("PROCESSING_DEADLINE_SECONDS", "30"))
-GEMINI_RETRY_ATTEMPTS = int(os.getenv("GEMINI_RETRY_ATTEMPTS", "3"))
+GEMINI_RETRY_ATTEMPTS = int(os.getenv("GEMINI_RETRY_ATTEMPTS", "2"))
 PROCESSED_UPLOAD_RETRY_ATTEMPTS = int(os.getenv("PROCESSED_UPLOAD_RETRY_ATTEMPTS", "3"))
 CLASSIFICATION_PROMPT_PATH = Path(os.getenv(
     "CLASSIFICATION_PROMPT_PATH",
@@ -99,21 +86,6 @@ def gemini_client():
 
 MAX_SIZE = 768
 MAX_SOURCE_EDGE = int(os.getenv("MAX_SOURCE_EDGE", "1600"))
-REMBG_SESSION_CACHE_MODE = os.getenv("REMBG_SESSION_CACHE_MODE", "none").lower()
-BACKGROUND_REMOVAL_MODE = os.getenv("BACKGROUND_REMOVAL_MODE", "hybrid").lower()
-
-
-@lru_cache(maxsize=2)
-def _cached_rembg_session(model_name: str):
-    return new_session(model_name)
-
-
-def rembg_session(model_name: str):
-    if REMBG_SESSION_CACHE_MODE == "all":
-        return _cached_rembg_session(model_name)
-    if REMBG_SESSION_CACHE_MODE == "primary" and model_name == "isnet-general-use":
-        return _cached_rembg_session(model_name)
-    return new_session(model_name)
 
 
 def downscale_for_processing(image: Image.Image) -> Image.Image:
@@ -151,35 +123,7 @@ def normalize_image(source: bytes) -> tuple[bytes, str]:
 
 
 def remove_background(image: Image.Image) -> Image.Image:
-    if BACKGROUND_REMOVAL_MODE == "light_only":
-        return remove_light_background(image)
-    if BACKGROUND_REMOVAL_MODE == "rembg_only":
-        return remove_background_with_rembg(image)
-    if BACKGROUND_REMOVAL_MODE == "hybrid":
-        try:
-            return remove_background_with_rembg(image)
-        except ValueError:
-            return remove_light_background(image)
-    raise ValueError(f"UNSUPPORTED_BACKGROUND_REMOVAL_MODE:{BACKGROUND_REMOVAL_MODE}")
-
-
-def remove_background_with_rembg(image: Image.Image) -> Image.Image:
-    session = rembg_session("isnet-general-use")
-    result = remove(image, session=session).convert("RGBA")
-    del session
-
-    if is_good_cutout(result):
-        return result
-
-    gc.collect()
-    fallback_session = rembg_session("u2net")
-    fallback = remove(image, session=fallback_session).convert("RGBA")
-    del fallback_session
-
-    if is_good_cutout(fallback):
-        return fallback
-
-    raise ValueError("BACKGROUND_REMOVAL_LOW_CONFIDENCE")
+    return remove_light_background(image)
 
 
 def remove_light_background(image: Image.Image) -> Image.Image:
@@ -243,34 +187,6 @@ def crop_to_alpha(image: Image.Image) -> Image.Image:
         raise ValueError("BACKGROUND_REMOVAL_EMPTY")
 
     return image.crop(alpha_box)
-
-
-def is_good_cutout(image: Image.Image) -> bool:
-    alpha = image.getchannel("A")
-    bbox = alpha.getbbox()
-
-    if not bbox:
-        return False
-
-    w, h = image.size
-    total = w * h
-
-    visible = sum(1 for p in alpha.getdata() if p > 10)
-    visible_ratio = visible / total
-
-    if visible_ratio < 0.03:
-        return False
-
-    if visible_ratio > 0.90:
-        return False
-
-    left, top, right, bottom = bbox
-    bbox_ratio = ((right - left) * (bottom - top)) / total
-
-    if bbox_ratio > 0.95:
-        return False
-
-    return True
 
 
 def _parse_jdbc_url(url: str) -> dict[str, str | int]:
@@ -526,21 +442,6 @@ def ready_with_processed(job: dict, processed_key: str, image_hash: str, metadat
             for tag in metadata.tags:
                 cursor.execute(insert_tag, (job["itemId"], tag))
             return {"status": "READY"}
-
-
-def mark_failed(item_id: str, error_code: str):
-    query = """
-        UPDATE clothing_items
-        SET processing_status = 'FAILED',
-            processed_s3_key = NULL,
-            processing_error = %s,
-            processing_deadline_at = NULL,
-            processed_at = now()
-        WHERE id = %s
-    """
-    with postgres_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(query, (error_code, item_id))
 
 
 def record_original_deleted(item_id: str):

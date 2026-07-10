@@ -1,7 +1,23 @@
 import io
+import importlib
 import logging
+import sys
 import pytest
 from PIL import Image
+
+
+def test_gemini_retry_attempts_defaults_to_two(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.delenv("GEMINI_RETRY_ATTEMPTS", raising=False)
+
+    if "app" in sys.modules:
+        app = importlib.reload(sys.modules["app"])
+    else:
+        app = importlib.import_module("app")
+
+    assert app.GEMINI_RETRY_ATTEMPTS == 2
 
 
 def test_normalized_image_is_bounded_and_hash_is_stable(monkeypatch):
@@ -13,7 +29,7 @@ def test_normalized_image_is_bounded_and_hash_is_stable(monkeypatch):
     monkeypatch.setenv("GEMINI_SECRET_ARN", "secret")
     import app
 
-    def fake_remove(image, **_kwargs):
+    def fake_remove_light_background(image):
         rgba = image.convert("RGBA")
         pixels = rgba.load()
         left = rgba.width // 3
@@ -28,7 +44,7 @@ def test_normalized_image_is_bounded_and_hash_is_stable(monkeypatch):
                     pixels[x, y] = (255, 0, 0, 0)
         return rgba
 
-    monkeypatch.setattr(app, "remove", fake_remove)
+    monkeypatch.setattr(app, "remove_light_background", fake_remove_light_background)
     source = io.BytesIO()
     Image.new("RGB", (1200, 600), "red").save(source, "PNG")
     first, first_hash = app.normalize_image(source.getvalue())
@@ -54,67 +70,13 @@ def test_downscale_for_processing_caps_large_inputs(monkeypatch):
     assert source.size == (4000, 3000)
 
 
-def test_rembg_session_defaults_to_uncached_fallback(monkeypatch):
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    import app
-
-    sentinel_sessions = []
-
-    def fake_new_session(model_name):
-        session = object()
-        sentinel_sessions.append((model_name, session))
-        return session
-
-    monkeypatch.setattr(app, "new_session", fake_new_session)
-    monkeypatch.setattr(app, "REMBG_SESSION_CACHE_MODE", "none")
-    app._cached_rembg_session.cache_clear()
-
-    primary_first = app.rembg_session("isnet-general-use")
-    primary_second = app.rembg_session("isnet-general-use")
-    fallback_first = app.rembg_session("u2net")
-    fallback_second = app.rembg_session("u2net")
-
-    assert primary_first is not primary_second
-    assert fallback_first is not fallback_second
-    assert [model for model, _session in sentinel_sessions] == [
-        "isnet-general-use",
-        "isnet-general-use",
-        "u2net",
-        "u2net",
-    ]
-
-
-def test_light_only_background_removal_skips_rembg(monkeypatch):
+def test_remove_background_uses_light_background_removal(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     import app
 
     sentinel = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
-    monkeypatch.setattr(app, "BACKGROUND_REMOVAL_MODE", "light_only")
-    monkeypatch.setattr(app, "remove_light_background", lambda _image: sentinel)
-    monkeypatch.setattr(
-        app,
-        "remove_background_with_rembg",
-        lambda _image: (_ for _ in ()).throw(AssertionError("rembg should not run")),
-    )
-
-    result = app.remove_background(Image.new("RGBA", (10, 10), (255, 255, 255, 255)))
-
-    assert result is sentinel
-
-
-def test_hybrid_background_removal_falls_back_to_light(monkeypatch):
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    import app
-
-    sentinel = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
-    monkeypatch.setattr(app, "BACKGROUND_REMOVAL_MODE", "hybrid")
-    monkeypatch.setattr(app, "remove_background_with_rembg", lambda _image: (_ for _ in ()).throw(ValueError("low confidence")))
     monkeypatch.setattr(app, "remove_light_background", lambda _image: sentinel)
 
     result = app.remove_background(Image.new("RGBA", (10, 10), (255, 255, 255, 255)))

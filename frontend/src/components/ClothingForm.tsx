@@ -60,9 +60,9 @@ export function ClothingForm({
           {isCreate && (
             <p className="text-xs font-normal leading-5 text-ink/45">
               <span className="font-semibold text-ink/60">Tip:</span> For the
-              best cutout, photograph your clothing against a contrasting
-              background. If the background is too similar to the item, it may
-              not be removed correctly.
+              cleanest result, photograph your clothing on a plain light
+              background with good lighting. Busy, dark, or similarly colored
+              backgrounds may not be removed cleanly.
             </p>
           )}
           {preview && <img className="mt-3 max-h-56 w-full rounded-2xl border border-stone object-contain p-2" src={preview} alt="Upload preview" />}

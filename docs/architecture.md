@@ -7,7 +7,7 @@
 3. The browser uploads the original image directly to S3 under `users/{userId}/original/{itemId}.{jpg|png}`.
 4. S3 sends an ObjectCreated notification to SQS.
 5. The worker parses only `users/*/original/*` keys and atomically claims the row by changing `WAITING_FOR_UPLOAD` to `PROCESSING`.
-6. The worker downloads the original, removes the background with rembg, normalizes to WebP, computes a SHA-256 hash, reuses metadata if the same hash already exists, otherwise calls Gemini.
+6. The worker downloads the original, removes light/plain backgrounds, normalizes to WebP, computes a SHA-256 hash, reuses metadata if the same hash already exists, otherwise calls Gemini.
 7. The worker writes `users/{userId}/processed/{itemId}.webp` to S3.
 8. The worker updates the row to `READY`, sets `processed_s3_key` to the processed object, stores `image_hash`, replaces tags, clears `processing_error`, then deletes the original image and records `original_deleted_at`.
 9. The worker deletes the SQS message after successful handling.
@@ -34,12 +34,11 @@
 3. If a match exists, the new item becomes `DUPLICATE_REJECTED` with `processing_error = DUPLICATE_UPLOAD` and `duplicate_of_id` pointing at the existing item.
 4. The worker deletes both the new original and the newly written processed object, leaving the existing item as the canonical image.
 
-### rembg Failure
+### Background Removal Failure
 
-1. The worker first tries rembg `isnet-general-use`, then falls back to rembg `u2net` if the cutout quality check fails.
-2. If both rembg cutouts are low confidence, the worker tries the local light-background remover.
-3. If normalization still raises a `ValueError`, finalization marks the item `READY` with the original image and `processing_error = BACKGROUND_REMOVAL_FAILED_USING_ORIGINAL`.
-4. No processed image is required in this fallback path.
+1. The worker uses the local light-background remover once.
+2. If normalization raises a `ValueError`, finalization marks the item `READY` with the original image and `processing_error = BACKGROUND_REMOVAL_FAILED_USING_ORIGINAL`.
+3. No processed image is required in this fallback path.
 
 ### Gemini Failure
 
