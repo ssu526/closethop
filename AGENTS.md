@@ -9,7 +9,8 @@ Use this as the quick repo guide for Codex and other coding agents. Keep it shor
   - `backend/`: Java 17 Spring Boot API with JPA, Flyway, Postgres, S3, SQS, and Cognito integration.
   - `worker/`: Python image-processing worker that consumes SQS, talks to S3/Postgres, removes backgrounds, normalizes images, and extracts clothing tags.
 - Production is Render for the API, worker, and Postgres; AWS still provides S3, SQS, and Cognito. See `README.md` and `docs/architecture.md` for the full flow.
-- The active deployment config is `render.yaml`. Do not revive legacy EC2/CDK/deploy paths unless explicitly requested.
+- AWS dependencies are provisioned from `infrastructure/` with CDK; the active compute/database deployment config is still `render.yaml`.
+- Do not revive legacy EC2 deployment paths unless explicitly requested.
 
 ## Common Commands
 
@@ -48,12 +49,24 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+Infrastructure:
+
+```bash
+cd infrastructure
+npm install
+npm run build
+npm test
+GOOGLE_CLIENT_ID=example GOOGLE_CLIENT_SECRET=example npm run synth -- -c environmentName=dev -c callbackUrl=http://localhost:3000/auth/callback -c logoutUrl=http://localhost:3000
+```
+
 ## Local Development Notes
 
 - Local development uses `backend/compose.yml` for Postgres, LocalStack S3/SQS, and the Python worker.
 - The frontend usually runs on `http://localhost:3000` and talks to the backend at `http://localhost:8080`.
 - Use `frontend/.env.example` and `backend/.env.example` as templates. Do not commit real secrets from `.env` files.
 - Browser uploads go directly to S3 through presigned URLs from the backend. S3 ObjectCreated events enqueue original image processing work to SQS.
+- Production AWS resources for S3, SQS, and Cognito are defined in `infrastructure/`.
+- The CDK stack does not manage the S3 bucket notification; wire S3 `ObjectCreated` -> SQS manually after deploy.
 
 ## Implementation Conventions
 

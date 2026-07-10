@@ -6,6 +6,7 @@ import {
   fetchAuthSession,
   fetchUserAttributes,
   getCurrentUser,
+  resendSignUpCode,
   signIn,
   signInWithRedirect,
   signOut,
@@ -37,9 +38,20 @@ interface AuthContextValue {
 
 const LOCAL_SESSION_KEY = "closethop.local.session";
 const AuthContext = createContext<AuthContextValue | null>(null);
+const ALREADY_SIGNED_IN_MESSAGE = "There is already a signed in user.";
+const USERNAME_EXISTS_ERROR = "UsernameExistsException";
+const CONFIRM_SIGN_UP_STEP = "CONFIRM_SIGN_UP";
 
 function firstPresent(...values: Array<string | undefined>) {
   return values.map((value) => value?.trim()).find(Boolean);
+}
+
+function isAlreadySignedInUserError(reason: unknown) {
+  return reason instanceof Error && reason.message === ALREADY_SIGNED_IN_MESSAGE;
+}
+
+function isErrorNamed(reason: unknown, name: string) {
+  return reason instanceof Error && reason.name === name;
 }
 
 function cognitoProfileName(
@@ -126,6 +138,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [mode]);
 
+  const beginExistingUserEmailOtp = useCallback(async (email: string) => {
+    const result = await signIn({
+      username: email,
+      options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
+    });
+    if (result.isSignedIn) {
+      setOtpPending(false);
+      await refresh();
+      return;
+    }
+
+    const needsSignUpConfirmation = result.nextStep.signInStep === CONFIRM_SIGN_UP_STEP;
+    if (needsSignUpConfirmation) {
+      await resendSignUpCode({ username: email });
+    }
+
+    setOtpStep(needsSignUpConfirmation ? "signUp" : "signIn");
+    setOtpPending(true);
+  }, [refresh]);
+
+  const beginNewUserEmailOtp = useCallback(async (email: string) => {
+    const result = await signUp({
+      username: email,
+      options: {
+        userAttributes: { email },
+        autoSignIn: { authFlowType: "USER_AUTH" }
+      }
+    });
+
+    if (result.isSignUpComplete) {
+      setOtpPending(false);
+      await refresh();
+      return;
+    }
+
+    setOtpStep("signUp");
+    setOtpPending(true);
+  }, [refresh]);
+
   useEffect(() => {
     if (mode === "cognito") configureCognito();
     configureApi(getToken, clearSession);
@@ -154,25 +205,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const requestEmailOtp = async (email: string) => {
     if (mode !== "cognito") throw new Error("Email OTP is only available in Cognito mode.");
-    setOtpEmail(email);
+    const normalizedEmail = email.trim();
+    setOtpEmail(normalizedEmail);
     try {
-      const result = await signIn({ username: email, options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" } });
-      if (result.isSignedIn) await refresh();
-      else {
-        setOtpStep("signIn");
-        setOtpPending(true);
-      }
+      await beginNewUserEmailOtp(normalizedEmail);
     } catch (reason) {
-      if (!(reason instanceof Error) || reason.name !== "UserNotFoundException") throw reason;
-      await signUp({
-        username: email,
-        options: {
-          userAttributes: { email },
-          autoSignIn: { authFlowType: "USER_AUTH" }
-        }
-      });
-      setOtpStep("signUp");
-      setOtpPending(true);
+      if (!isErrorNamed(reason, USERNAME_EXISTS_ERROR)) throw reason;
+      await beginExistingUserEmailOtp(normalizedEmail);
     }
   };
 
@@ -205,7 +244,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       confirmEmailOtp,
       signInWithGoogle: async () => {
         if (mode !== "cognito") throw new Error("Google sign-in is only available in Cognito mode.");
-        await signInWithRedirect({ provider: "Google" });
+        try {
+          await signInWithRedirect({ provider: "Google" });
+        } catch (reason) {
+          if (!isAlreadySignedInUserError(reason)) throw reason;
+          await refresh();
+        }
       },
       logout: async () => {
         if (mode === "cognito") await signOut();

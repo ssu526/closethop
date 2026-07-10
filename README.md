@@ -35,6 +35,7 @@ state diagram, failure flows, and cleanup jobs.
 - `frontend/` React + TypeScript UI
 - `backend/` Spring Boot HTTP API
 - `worker/` Python SQS image-processing worker
+- `infrastructure/` AWS CDK app for S3, SQS, and Cognito
 - `render.yaml` Render blueprint for the API, worker, and Postgres services
 
 ## Prerequisites
@@ -60,23 +61,79 @@ The active deployment path on `main` uses:
 The repository root includes [`render.yaml`](render.yaml), which defines the
 Render blueprint for the backend services.
 
-### AWS prerequisites
+### AWS infrastructure via CDK
 
-You still need an AWS account with:
+`main` includes an AWS CDK app under [`infrastructure/`](infrastructure) that
+creates the AWS dependencies for the Render-based deployment:
 
-- S3 for image storage
-- SQS for image processing events
-- Cognito for auth
+- private S3 image bucket
+- SQS processing queue and dead-letter queue
+- Cognito user pool, app client, managed login domain, and Google provider
 
-You also need runtime values for:
+The CDK stack intentionally does **not** configure the S3 bucket notification.
+Add the S3 -> SQS event notification manually after deploy if your AWS account
+cannot create the helper Lambda that CDK normally uses for bucket-notification
+management.
 
-- `AWS_S3_BUCKET`
-- `PROCESSING_QUEUE_URL`
-- `COGNITO_ISSUER`
-- `COGNITO_CLIENT_ID`
-- `GEMINI_API_KEY`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
+Before deployment, gather:
+
+- `callbackUrl`, for example `https://app.example.com/auth/callback`
+- `logoutUrl`, for example `https://app.example.com`
+- `googleClientId`
+- `googleClientSecret`
+
+Install and synthesize the stack:
+
+```bash
+cd infrastructure
+npm install
+npm run build
+npm test
+GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID \
+GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET \
+npx cdk synth \
+  -c environmentName=dev \
+  -c callbackUrl=https://app.example.com/auth/callback \
+  -c logoutUrl=https://app.example.com
+```
+
+Deploy with the same context values:
+
+```bash
+cd infrastructure
+GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID \
+GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET \
+npx cdk deploy \
+  -c environmentName=prod \
+  -c callbackUrl=https://app.example.com/auth/callback \
+  -c logoutUrl=https://app.example.com
+```
+
+If you prefer, you can still pass `googleClientId` and `googleClientSecret`
+through `-c`, but environment variables are less likely to leak into shell
+history.
+
+The stack outputs the AWS values you need for the Render deployment and any
+frontend host, including:
+
+- `ImageBucketName`
+- `ProcessingQueueUrl`
+- `UserPoolId`
+- `UserPoolClientId`
+- `CognitoIssuer`
+- `CognitoDomain`
+- `GoogleOAuthCallbackUrl`
+- `ManualS3NotificationEvent`
+- `ManualS3NotificationPrefix`
+
+After deploy, configure the S3 event notification manually in AWS:
+
+1. Open the bucket from `ImageBucketName`.
+2. Go to `Properties` -> `Event notifications`.
+3. Create a notification with:
+   - event type `s3:ObjectCreated:*`
+   - prefix `users/`
+   - destination set to the queue from `ProcessingQueueUrl`
 
 ### Render API, worker, and database
 
@@ -86,15 +143,15 @@ You also need runtime values for:
    - `closethop-worker`
    - `closethop-postgres`
 3. When prompted for `sync: false` values, set:
-   - `AWS_S3_BUCKET`
-   - `COGNITO_ISSUER`
-   - `COGNITO_CLIENT_ID`
+   - `AWS_S3_BUCKET` from `ImageBucketName`
+   - `COGNITO_ISSUER` from `CognitoIssuer`
+   - `COGNITO_CLIENT_ID` from `UserPoolClientId`
    - `CORS_ALLOWED_ORIGINS`
    - `GEMINI_API_KEY`
    - `AWS_ACCESS_KEY_ID`
    - `AWS_SECRET_ACCESS_KEY`
-   - `IMAGE_BUCKET`
-   - `PROCESSING_QUEUE_URL`
+   - `IMAGE_BUCKET` from `ImageBucketName`
+   - `PROCESSING_QUEUE_URL` from `ProcessingQueueUrl`
 
 Deployment notes:
 
@@ -102,7 +159,14 @@ Deployment notes:
   for Spring Boot at startup.
 - The current setup is intended to start with one API instance and one worker
   instance.
-- Free Render plans are fine for validation, but not for durable production.
+- The checked-in blueprint uses a free API plan, a starter worker plan, and a
+  free Postgres plan. That mix is fine for validation, but not for durable
+  production.
+- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` should belong to an IAM
+  principal with access to the bucket and processing queue. Google OAuth and
+  Gemini values remain manually supplied and are not stored in git.
+- Manually configure the S3 event notification after the CDK deploy so uploads
+  are sent from S3 to the processing queue.
 
 ### Frontend hosting
 
@@ -117,14 +181,16 @@ Set these production environment variables for the frontend:
 ```dotenv
 VITE_API_BASE_URL=https://closethop-api.onrender.com
 VITE_AUTH_MODE=cognito
-VITE_COGNITO_USER_POOL_ID=us-east-1_example
-VITE_COGNITO_CLIENT_ID=exampleclientid
-VITE_COGNITO_DOMAIN=closethop-dev-123456789012.auth.us-east-1.amazoncognito.com
+VITE_COGNITO_USER_POOL_ID=<UserPoolId output>
+VITE_COGNITO_CLIENT_ID=<UserPoolClientId output>
+VITE_COGNITO_DOMAIN=<CognitoDomain output without https://>
 VITE_COGNITO_REDIRECT_SIGN_IN=https://app.example.com/auth/callback
 VITE_COGNITO_REDIRECT_SIGN_OUT=https://app.example.com
 ```
 
 Set backend `CORS_ALLOWED_ORIGINS` to the frontend origin.
+After the CDK deploy, add the `GoogleOAuthCallbackUrl` output to the Google
+OAuth client’s authorized redirect URIs.
 
 ## Start Locally
 
@@ -246,6 +312,8 @@ sign-in also requires the client configuration and Cognito
 - `frontend/.env.example` controls the API base URL and auth mode.
 - `backend/.env.example` is used by the backend LocalStack/Postgres compose
   setup.
+- `infrastructure/` provisions the AWS resources that the Render deployment
+  depends on.
 - The backend can also run against PostgreSQL and Cognito in production via the
   values documented in `backend/.env.example`.
 - Production runs separate API and Python worker containers. The Python worker
