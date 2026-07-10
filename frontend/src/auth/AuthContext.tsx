@@ -41,6 +41,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 const ALREADY_SIGNED_IN_MESSAGE = "There is already a signed in user.";
 const USERNAME_EXISTS_ERROR = "UsernameExistsException";
 const CONFIRM_SIGN_UP_STEP = "CONFIRM_SIGN_UP";
+const SELECT_FIRST_FACTOR_STEP = "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION";
+const EMAIL_OTP_CHALLENGE = "EMAIL_OTP";
 
 interface CognitoErrorLike {
   name?: unknown;
@@ -209,10 +211,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearCognitoSession, getCognitoProfileAttributes, mode]);
 
   const beginExistingUserEmailOtp = useCallback(async (email: string) => {
-    const result = await signIn({
+    let result = await signIn({
       username: email,
-      options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" }
+      options: { authFlowType: "USER_AUTH", preferredChallenge: EMAIL_OTP_CHALLENGE }
     });
+    if (result.nextStep.signInStep === SELECT_FIRST_FACTOR_STEP) {
+      result = await confirmSignIn({ challengeResponse: EMAIL_OTP_CHALLENGE });
+    }
     if (result.isSignedIn) {
       setOtpPending(false);
       await refresh();

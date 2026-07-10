@@ -370,4 +370,33 @@ describe("AuthProvider Cognito auth", () => {
     });
     expect(authMocks.resendSignUpCode).toHaveBeenCalledWith({ username: "sue@example.com" });
   });
+
+  it("selects email OTP when Cognito asks for a first auth factor", async () => {
+    const user = userEvent.setup();
+
+    authMocks.signUp.mockRejectedValueOnce(Object.assign(new Error("exists"), { name: "UsernameExistsException" }));
+    authMocks.signIn.mockResolvedValueOnce({
+      isSignedIn: false,
+      nextStep: { signInStep: "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION" }
+    });
+    authMocks.confirmSignIn.mockResolvedValueOnce({
+      isSignedIn: false,
+      nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_EMAIL_CODE" }
+    });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /email me a code/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("otp-pending")).toBeInTheDocument();
+    });
+    expect(authMocks.confirmSignIn).toHaveBeenCalledWith({ challengeResponse: "EMAIL_OTP" });
+  });
 });
